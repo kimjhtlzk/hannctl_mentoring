@@ -1,0 +1,12 @@
+# 위험 1: 승인되지 않은 외부 레지스트리 이미지 (보안 설정은 정상 → "출처"만 문제인 경우를 분리해 검증)
+apiVersion: v1
+kind: Pod
+metadata: { name: hannctl-attack-untrusted-registry, labels: { hannctl.io/scenario: s3 } }
+spec:
+  automountServiceAccountToken: false
+  securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+  containers:
+    - name: c
+      image: public.ecr.aws/docker/library/python:3.13-alpine
+      command: [sleep, "3600"]
+      securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }

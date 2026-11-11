@@ -1,0 +1,43 @@
+# [AFTER 3] 테넌트 운영자 최소 권한 — 자기 Namespace 의 워크로드 조회 + 배포 재시작/스케일만 허용
+#  Secret 조회, 다른 테넌트 접근, 클러스터 범위 권한은 없음
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: hannctl-tenant-operator, namespace: tenant-a, labels: { hannctl.io/scenario: s2 } }
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, services, endpoints, configmaps, events]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments, replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments, deployments/scale]
+    verbs: [patch, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: hannctl-tenant-operator, namespace: tenant-a, labels: { hannctl.io/scenario: s2 } }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: hannctl-tenant-operator }
+subjects: [{ kind: Group, name: "hannctl:tenant-a-operators", apiGroup: rbac.authorization.k8s.io }]
+---
+# [AFTER 3] 테넌트 운영자 최소 권한 — 자기 Namespace 의 워크로드 조회 + 배포 재시작/스케일만 허용
+#  Secret 조회, 다른 테넌트 접근, 클러스터 범위 권한은 없음
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: hannctl-tenant-operator, namespace: tenant-b, labels: { hannctl.io/scenario: s2 } }
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, services, endpoints, configmaps, events]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments, replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments, deployments/scale]
+    verbs: [patch, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: hannctl-tenant-operator, namespace: tenant-b, labels: { hannctl.io/scenario: s2 } }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: hannctl-tenant-operator }
+subjects: [{ kind: Group, name: "hannctl:tenant-b-operators", apiGroup: rbac.authorization.k8s.io }]

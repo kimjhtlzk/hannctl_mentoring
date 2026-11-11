@@ -1,0 +1,75 @@
+# 고객사 B 의 업무 서비스: web(프론트) → api(내부 API)
+# PSA restricted 를 처음부터 만족하도록 작성 → After 에서 정책을 켜도 정상 서비스는 유지된다.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tenant-b
+  labels: { hannctl.io/scenario: s2, hannctl.io/tenant: "b" }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: tenant-b
+  labels: { app: api, hannctl.io/scenario: s2 }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: api } }
+  template:
+    metadata: { labels: { app: api, hannctl.io/tenant: "b" } }
+    spec:
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: app
+          image: public.ecr.aws/docker/library/python:3.13-alpine
+          command: [python3, /app/app.py]
+          env: [{ name: TENANT, value: tenant-b }, { name: ROLE, value: api }, { name: PYTHONDONTWRITEBYTECODE, value: "1" }]
+          ports: [{ containerPort: 8080 }]
+          readinessProbe: { httpGet: { path: /health, port: 8080 }, periodSeconds: 5 }
+          resources: { requests: { cpu: 25m, memory: 32Mi }, limits: { memory: 64Mi } }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          volumeMounts: [{ name: app, mountPath: /app }]
+      volumes: [{ name: app, configMap: { name: bizdesk-app } }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: api, namespace: tenant-b, labels: { hannctl.io/scenario: s2 } }
+spec: { selector: { app: api }, ports: [{ port: 80, targetPort: 8080 }] }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: tenant-b
+  labels: { app: web, hannctl.io/scenario: s2 }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: web } }
+  template:
+    metadata: { labels: { app: web, hannctl.io/tenant: "b" } }
+    spec:
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: app
+          image: public.ecr.aws/docker/library/python:3.13-alpine
+          command: [python3, /app/app.py]
+          env: [{ name: TENANT, value: tenant-b }, { name: ROLE, value: web }, { name: PYTHONDONTWRITEBYTECODE, value: "1" }]
+          ports: [{ containerPort: 8080 }]
+          readinessProbe: { httpGet: { path: /health, port: 8080 }, periodSeconds: 5 }
+          resources: { requests: { cpu: 25m, memory: 32Mi }, limits: { memory: 64Mi } }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          volumeMounts: [{ name: app, mountPath: /app }]
+      volumes: [{ name: app, configMap: { name: bizdesk-app } }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: web, namespace: tenant-b, labels: { hannctl.io/scenario: s2 } }
+spec: { selector: { app: web }, ports: [{ port: 80, targetPort: 8080 }] }
+---
+# RBAC 테스트용 가상 비밀값 — 테넌트 운영자도 볼 필요가 없는 정보(최소 권한 검증 대상)
+apiVersion: v1
+kind: Secret
+metadata: { name: tenant-db-credential, namespace: tenant-b, labels: { hannctl.io/scenario: s2 } }
+stringData: { password: "demo-only-not-a-real-secret-b" }

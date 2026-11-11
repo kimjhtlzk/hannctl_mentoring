@@ -1,0 +1,14 @@
+# [AFTER 4] Cluster Autoscaler (helm 값) — Pending Pod 가 생기면 노드를 추가, 한가하면 줄임
+#  AWS 권한은 Access Key 없이 EKS Pod Identity 로 받음 (cfn/stack.yaml 의 ClusterAutoscalerRole)
+cloudProvider: aws
+fullnameOverride: cluster-autoscaler
+rbac:
+  serviceAccount:
+    name: cluster-autoscaler          # Pod Identity 연결 대상 ServiceAccount
+extraArgs:
+  scale-down-unneeded-time: 2m        # 데모용: 노드가 2분 동안 불필요하면 축소 (기본 10분)
+  scale-down-delay-after-add: 2m
+  skip-nodes-with-local-storage: "false"
+  expander: least-waste
+resources:
+  requests: { cpu: 50m, memory: 128Mi }

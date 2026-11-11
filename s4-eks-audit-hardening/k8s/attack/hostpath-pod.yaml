@@ -1,0 +1,11 @@
+# 위험 Pod 2: 노드 루트 파일시스템(hostPath /) 마운트 — 서버측 dry-run 으로만 시도
+apiVersion: v1
+kind: Pod
+metadata: { name: hannctl-attack-hostpath, labels: { hannctl.io/scenario: s4 } }
+spec:
+  containers:
+    - name: c
+      image: public.ecr.aws/docker/library/busybox:1.37
+      command: [sleep, "3600"]
+      volumeMounts: [{ name: host, mountPath: /host }]
+  volumes: [{ name: host, hostPath: { path: / } }]

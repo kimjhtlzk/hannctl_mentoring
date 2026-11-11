@@ -1,0 +1,17 @@
+# Prometheus + Grafana (kube-prometheus-stack) 경량 설정 — 실습용
+alertmanager: { enabled: false }       # 알림은 이번 범위 밖
+prometheus:
+  prometheusSpec:
+    retention: 2h                      # FinOps: 2시간치만 보관
+    resources: { requests: { cpu: 100m, memory: 400Mi } }
+    serviceMonitorSelectorNilUsesHelmValues: false
+grafana:
+  adminPassword: ""                    # 비우면 무작위 생성 → Secret 에서 조회 (README 참고)
+  defaultDashboardsTimezone: Asia/Seoul
+  resources: { requests: { cpu: 50m, memory: 128Mi } }
+kube-state-metrics:
+  resources: { requests: { cpu: 20m, memory: 64Mi } }
+prometheus-node-exporter:
+  resources: { requests: { cpu: 20m, memory: 32Mi } }
+prometheusOperator:
+  resources: { requests: { cpu: 50m, memory: 128Mi } }

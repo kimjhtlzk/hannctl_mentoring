@@ -1,0 +1,43 @@
+# [AFTER 5] office Namespace 네트워크 최소화
+#  기본 전부 차단 → 필요한 것만 허용: DNS / AWS API(443) / Pod Identity Agent / web→api
+#  노드 IMDS(169.254.169.254)는 허용 목록에 없으므로 네트워크 계층에서도 차단된다 (hop limit 1 과 이중 방어)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny-all, namespace: office, labels: { hannctl.io/scenario: s5 } }
+spec: { podSelector: {}, policyTypes: [Ingress, Egress] }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-dns-and-aws-apis, namespace: office, labels: { hannctl.io/scenario: s5 } }
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:                                                  # CoreDNS
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+          podSelector: { matchLabels: { k8s-app: kube-dns } }
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    - to: [{ ipBlock: { cidr: 169.254.170.23/32 } }]      # EKS Pod Identity Agent (임시 자격증명 발급)
+      ports: [{ protocol: TCP, port: 80 }]
+    - to: [{ ipBlock: { cidr: 0.0.0.0/0, except: [169.254.169.254/32] } }]   # AWS API (STS, Secrets Manager)
+      ports: [{ protocol: TCP, port: 443 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-web-to-api, namespace: office, labels: { hannctl.io/scenario: s5 } }
+spec:
+  podSelector: { matchLabels: { app: office-api } }
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { access: office-api } } }]   # 라벨 access=office-api 가 있는 Pod(office-web)만
+      ports: [{ protocol: TCP, port: 8080 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-web-egress-to-api, namespace: office, labels: { hannctl.io/scenario: s5 } }
+spec:
+  podSelector: { matchLabels: { access: office-api } }
+  policyTypes: [Egress]
+  egress:
+    - to: [{ podSelector: { matchLabels: { app: office-api } } }]
+      ports: [{ protocol: TCP, port: 8080 }]

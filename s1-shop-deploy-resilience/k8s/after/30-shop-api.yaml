@@ -1,0 +1,28 @@
+# [AFTER 3] 안전한 배포 설정
+#  - readinessProbe: /health 가 200 일 때만 Service 트래픽을 받음 (고장 난 새 버전은 트래픽 제외)
+#  - livenessProbe : 응답이 멈춘 컨테이너는 자동 재시작
+#  - maxUnavailable 0: 새 Pod 가 Ready 되기 전에는 기존 Pod 를 내리지 않음 (무중단 시도)
+#  - securityContext: root 금지, 권한 상승 금지, 읽기 전용 파일시스템 (PSA restricted 충족)
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: shop-api, namespace: shop, labels: { app: shop-api, hannctl.io/scenario: s1, hannctl.io/phase: after } }
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector: { matchLabels: { app: shop-api } }
+  template:
+    metadata: { labels: { app: shop-api } }
+    spec:
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: app
+          image: __IMAGE__
+          ports: [{ containerPort: 8080 }]
+          readinessProbe: { httpGet: { path: /health, port: 8080 }, periodSeconds: 3, failureThreshold: 2 }
+          livenessProbe:  { httpGet: { path: /health, port: 8080 }, periodSeconds: 10, failureThreshold: 6, initialDelaySeconds: 10 }
+          resources: { requests: { cpu: 250m, memory: 64Mi }, limits: { cpu: "1", memory: 128Mi } }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }

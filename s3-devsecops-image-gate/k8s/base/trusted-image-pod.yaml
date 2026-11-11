@@ -1,0 +1,11 @@
+# 정상 비교군: 승인된 ECR 이미지 + 안전한 설정 → After 에서도 "허용"되어야 한다 (서버측 dry-run 으로만 사용)
+apiVersion: v1
+kind: Pod
+metadata: { name: hannctl-check-trusted, labels: { hannctl.io/scenario: s3 } }
+spec:
+  automountServiceAccountToken: false
+  securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+  containers:
+    - name: app
+      image: __IMAGE__
+      securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }

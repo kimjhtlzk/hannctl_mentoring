@@ -1,0 +1,57 @@
+# [참고용 · 실행되지 않음] 같은 파이프라인을 GitHub Actions 로 옮긴 예시
+#  - 이 키트는 CodeBuild 로 동일한 단계를 자동 실행한다(로컬 Docker·GitHub 연결 불필요).
+#  - 실제 사용 시: .github/workflows/ 에 복사하고, Repository Variables 에 AWS_ACCOUNT_ID 등록,
+#    AWS 에 GitHub OIDC Provider + 배포 Role(hannctl-s3-github-deploy 등) 생성 필요.
+#  - 핵심: 정적 Access Key 대신 OIDC 단기 자격 증명, Trivy 실패 시 Push 단계가 실행되지 않음.
+name: release-api-ci
+
+on:
+  push:
+    branches: [main]
+    paths: ["s3-devsecops-image-gate/app/**"]
+
+permissions:
+  id-token: write   # OIDC 토큰 발급 (AWS Role assume 용)
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-2
+  REPO_NAME: hannctl-s3-release-api
+  REGISTRY: ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.ap-northeast-2.amazonaws.com
+
+jobs:
+  build-scan-push:
+    runs-on: ubuntu-24.04-arm          # EKS 노드(Graviton, arm64)와 같은 아키텍처
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1) 빌드 (아직 Push 하지 않음)
+      - name: Build
+        working-directory: s3-devsecops-image-gate/app
+        run: docker build --build-arg GIT_COMMIT=${GITHUB_SHA::7} --build-arg BUILD_ID=gha-${{ github.run_id }} -t $REGISTRY/$REPO_NAME:$GITHUB_SHA .
+
+      # 2) 보안 게이트: HIGH/CRITICAL(수정 버전 존재) 1건이라도 있으면 여기서 실패 → 아래 단계 실행 안 됨
+      - name: Trivy gate
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.REPO_NAME }}:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      # 3) 통과한 경우에만 AWS 로그인(OIDC) → ECR Push
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/hannctl-s3-github-deploy
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+      - name: Push
+        run: docker push $REGISTRY/$REPO_NAME:$GITHUB_SHA
+
+      # 4) 태그가 아닌 digest 로 배포 + 추적 정보 기록
+      - name: Deploy by digest
+        run: |
+          DIGEST=$(aws ecr describe-images --repository-name $REPO_NAME --image-ids imageTag=$GITHUB_SHA --query 'imageDetails[0].imageDigest' --output text)
+          aws eks update-kubeconfig --name hannctl-s3-release
+          kubectl -n release set image deploy/release-api app=$REGISTRY/$REPO_NAME@$DIGEST
+          kubectl -n release annotate deploy/release-api --overwrite hannctl.io/git-commit=${GITHUB_SHA::7} hannctl.io/image-digest=$DIGEST hannctl.io/ci-build-id=gha-${{ github.run_id }}

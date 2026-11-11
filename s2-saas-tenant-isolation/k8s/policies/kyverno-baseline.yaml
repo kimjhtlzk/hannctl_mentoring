@@ -1,0 +1,68 @@
+# hannctl 공통 Kyverno 정책 — Pod Security Standards 의 핵심 3가지를 "생성 전에" 거부
+#  - 형식: Kyverno ValidatingPolicy (policies.kyverno.io/v1, CEL 식) — 구형 ClusterPolicy 의 후속 방식
+#  - 대상: 라벨 hannctl.io/protected=true 가 붙은 Namespace 의 Pod (시스템 Namespace 는 영향 없음)
+#  - validationActions: [Deny] → 위반 요청을 거부 ([Audit] 로 바꾸면 기록만 남기고 허용)
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: hannctl-disallow-privileged
+  labels: { hannctl.io/managed: "true" }
+  annotations: { policies.kyverno.io/title: "특권(privileged) 컨테이너 금지 — PSS Baseline" }
+spec:
+  validationActions: [Deny]
+  matchConstraints:
+    resourceRules:
+      - { apiGroups: [""], apiVersions: [v1], operations: [CREATE, UPDATE], resources: [pods] }
+    namespaceSelector:
+      matchLabels: { hannctl.io/protected: "true" }
+  validations:
+    # 모든 컨테이너(+init 컨테이너)에서 privileged 가 true 가 아니어야 한다
+    - expression: >-
+        object.spec.containers.all(c, !has(c.securityContext) || !has(c.securityContext.privileged) || !c.securityContext.privileged) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c, !has(c.securityContext) || !has(c.securityContext.privileged) || !c.securityContext.privileged))
+      message: "[hannctl/Kyverno] privileged 컨테이너는 허용되지 않습니다."
+---
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: hannctl-disallow-host-path
+  labels: { hannctl.io/managed: "true" }
+  annotations: { policies.kyverno.io/title: "hostPath 볼륨 금지 — PSS Baseline" }
+spec:
+  validationActions: [Deny]
+  matchConstraints:
+    resourceRules:
+      - { apiGroups: [""], apiVersions: [v1], operations: [CREATE, UPDATE], resources: [pods] }
+    namespaceSelector:
+      matchLabels: { hannctl.io/protected: "true" }
+  validations:
+    # 노드의 파일시스템을 Pod 에 붙이는 hostPath 볼륨이 하나도 없어야 한다
+    - expression: "!has(object.spec.volumes) || object.spec.volumes.all(v, !has(v.hostPath))"
+      message: "[hannctl/Kyverno] hostPath 볼륨은 허용되지 않습니다."
+---
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: hannctl-require-run-as-non-root
+  labels: { hannctl.io/managed: "true" }
+  annotations: { policies.kyverno.io/title: "root 실행 금지 — PSS Restricted" }
+spec:
+  validationActions: [Deny]
+  matchConstraints:
+    resourceRules:
+      - { apiGroups: [""], apiVersions: [v1], operations: [CREATE, UPDATE], resources: [pods] }
+    namespaceSelector:
+      matchLabels: { hannctl.io/protected: "true" }
+  variables:
+    # Pod 수준 설정 (컨테이너에 값이 없으면 이 값을 따른다)
+    - name: podNonRoot
+      expression: "has(object.spec.securityContext) && has(object.spec.securityContext.runAsNonRoot) && object.spec.securityContext.runAsNonRoot"
+    - name: podRootUid
+      expression: "has(object.spec.securityContext) && has(object.spec.securityContext.runAsUser) && object.spec.securityContext.runAsUser == 0"
+  validations:
+    # 각 컨테이너: runAsNonRoot=true 이고, UID 0(root) 으로 실행하지 않아야 한다
+    - expression: >-
+        object.spec.containers.all(c,
+          ((has(c.securityContext) && has(c.securityContext.runAsNonRoot)) ? c.securityContext.runAsNonRoot : variables.podNonRoot) &&
+          ((has(c.securityContext) && has(c.securityContext.runAsUser)) ? c.securityContext.runAsUser != 0 : !variables.podRootUid))
+      message: "[hannctl/Kyverno] runAsNonRoot=true 이고 root(UID 0) 가 아니어야 합니다."

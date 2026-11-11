@@ -1,0 +1,29 @@
+# ReleaseSafe 고객용 API — 이미지는 run.sh 가 CI 결과(ECR 주소)로 __IMAGE__ 를 바꿔 넣는다.
+# 처음부터 PSA restricted 기준을 만족하도록 작성 → After 에서 정책을 켜도 정상 서비스는 유지된다.
+# (Namespace "release" 는 run.sh 가 없을 때만 만든다 — 보안 라벨이 덮어써지지 않도록 여기엔 두지 않음)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-api
+  namespace: release
+  labels: { app: release-api, hannctl.io/scenario: s3 }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: release-api } }
+  template:
+    metadata: { labels: { app: release-api } }
+    spec:
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: app
+          image: __IMAGE__
+          ports: [{ containerPort: 8080 }]
+          readinessProbe: { httpGet: { path: /health, port: 8080 }, periodSeconds: 5 }
+          resources: { requests: { cpu: 25m, memory: 32Mi }, limits: { memory: 96Mi } }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: release-api, namespace: release, labels: { hannctl.io/scenario: s3 } }
+spec: { selector: { app: release-api }, ports: [{ port: 80, targetPort: 8080 }] }

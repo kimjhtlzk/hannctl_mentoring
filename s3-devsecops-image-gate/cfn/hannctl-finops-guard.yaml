@@ -1,0 +1,383 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  [hannctl] FinOps Guard - CFN exec role for hannctl stacks, lifetime janitor Lambda, monthly cap + SNS alerts.
+  Only stacks named hannctl-* AND tagged Project=hannctl are ever touched.
+
+# 한국어 요약
+#  (1) CloudFormation 실행 역할(hannctl-cfn-exec-role) - 시나리오 스택 생성/삭제 전용
+#  (2) 자동 정리 Lambda(hannctl-janitor) - 유지 시간(생성 시각 기준) 만료 또는 월 상한 도달 시 hannctl 스택만 삭제
+#  (3) 월 예산(hannctl-monthly-budget) + 알림 SNS(hannctl-finops-alerts)
+#  이름이 hannctl- 로 시작하고 Project=hannctl 태그가 있는 스택 외에는 절대 건드리지 않는다.
+
+Parameters:
+  MonthlyBudgetUsd:
+    Type: Number
+    Default: 20
+    MinValue: 0
+    Description: Monthly cap (USD, ~30,000 KRW max). Janitor deletes all hannctl stacks when the real-time estimate reaches it; AWS Budget alerts at 50/80/100%.
+  AlertEmail:
+    Type: String
+    Default: ""
+    Description: Optional e-mail for budget/janitor alerts (confirm subscription).
+  DefaultLifetimeHours:
+    Type: Number
+    Default: 6
+    MinValue: 0
+    MaxValue: 24
+    Description: Lifetime used when a hannctl stack has no hannctl:lifetime-hours tag (hours from stack creation, 0 = unlimited).
+  JanitorIntervalMinutes:
+    Type: Number
+    Default: 10
+    MinValue: 5
+    MaxValue: 60
+
+Conditions:
+  HasEmail: !Not [!Equals [!Ref AlertEmail, ""]]
+  HasCap: !Not [!Equals [!Ref MonthlyBudgetUsd, 0]]   # 0 = 월 상한 끄기 (Budget 도 만들지 않음)
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # 알림
+  # ---------------------------------------------------------------------------
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: hannctl-finops-alerts
+      DisplayName: hannctl FinOps
+      Tags:
+        - { Key: Name, Value: hannctl-finops-alerts }
+
+  AlertTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [!Ref AlertTopic]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: hannctlAllowBudgets
+            Effect: Allow
+            Principal: { Service: budgets.amazonaws.com }
+            Action: sns:Publish
+            Resource: !Ref AlertTopic
+            Condition:
+              StringEquals: { "aws:SourceAccount": !Ref AWS::AccountId }
+
+  AlertEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasEmail
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  # ---------------------------------------------------------------------------
+  # 예산 (Project=hannctl 비용 할당 태그 기준)
+  # ---------------------------------------------------------------------------
+  MonthlyBudget:
+    Type: AWS::Budgets::Budget
+    Condition: HasCap
+    Properties:
+      Budget:
+        BudgetName: hannctl-monthly-budget
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit: { Amount: !Ref MonthlyBudgetUsd, Unit: USD }
+        CostFilters:
+          TagKeyValue: ["user:Project$hannctl"]
+      NotificationsWithSubscribers:
+        - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 50, ThresholdType: PERCENTAGE }
+          Subscribers: [{ SubscriptionType: SNS, Address: !Ref AlertTopic }]
+        - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80, ThresholdType: PERCENTAGE }
+          Subscribers: [{ SubscriptionType: SNS, Address: !Ref AlertTopic }]
+        - Notification: { NotificationType: FORECASTED, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE }
+          Subscribers: [{ SubscriptionType: SNS, Address: !Ref AlertTopic }]
+    DependsOn: AlertTopicPolicy
+
+  # ---------------------------------------------------------------------------
+  # 시나리오 스택 전용 CloudFormation 실행 역할
+  #  - 시나리오 스택은 반드시 이 역할로 생성된다 → janitor 가 같은 역할로 삭제 가능
+  #  - IAM/S3/Secrets/Lambda 등 이름 기반 권한은 hannctl-* 로 한정
+  # ---------------------------------------------------------------------------
+  CfnExecRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: hannctl-cfn-exec-role
+      Description: "[hannctl] CloudFormation execution role for hannctl scenario stacks only"
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudformation.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: { "aws:SourceAccount": !Ref AWS::AccountId }
+      Policies:
+        - PolicyName: hannctl-cfn-exec-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: hannctlInfraServices
+                Effect: Allow
+                Action:
+                  - ec2:*
+                  - eks:*
+                  - ecr:*
+                  - logs:*
+                  - codebuild:*
+                  - autoscaling:*
+                  - events:*
+                  - scheduler:*
+                  - cloudwatch:*
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - kms:DescribeKey
+                  - kms:CreateGrant
+                  - kms:ListAliases
+                  - iam:ListRoles
+                  - iam:GetRole
+                  - iam:ListInstanceProfiles
+                  - iam:GetInstanceProfile
+                  - sts:GetCallerIdentity
+                Resource: "*"
+              - Sid: hannctlIamOnlyHannctlNames
+                Effect: Allow
+                Action: iam:*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/hannctl-*
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:user/hannctl-*
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/hannctl-*
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/hannctl-*
+              - Sid: hannctlServiceLinkedRoles
+                Effect: Allow
+                Action: iam:CreateServiceLinkedRole
+                Resource: "*"
+                Condition:
+                  StringLike:
+                    iam:AWSServiceName:
+                      - eks.amazonaws.com
+                      - eks-nodegroup.amazonaws.com
+                      - autoscaling.amazonaws.com
+                      - ecr.amazonaws.com
+              - Sid: hannctlS3
+                Effect: Allow
+                Action: s3:*
+                Resource:
+                  - arn:aws:s3:::hannctl-*
+                  - arn:aws:s3:::hannctl-*/*
+              - Sid: hannctlSecrets
+                Effect: Allow
+                Action: secretsmanager:*
+                Resource: !Sub arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:hannctl/*
+              - Sid: hannctlSecretsRandom
+                Effect: Allow
+                Action: secretsmanager:GetRandomPassword
+                Resource: "*"
+              - Sid: hannctlLambdaSns
+                Effect: Allow
+                Action: [lambda:*, sns:*]
+                Resource:
+                  - !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:hannctl-*
+                  - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:hannctl-*
+      Tags:
+        - { Key: Name, Value: hannctl-cfn-exec-role }
+
+  # ---------------------------------------------------------------------------
+  # 자동 정리 Lambda
+  # ---------------------------------------------------------------------------
+  JanitorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/hannctl-janitor
+      RetentionInDays: 7
+      Tags:
+        - { Key: Name, Value: hannctl-janitor-logs }
+
+  JanitorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: hannctl-janitor-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: hannctl-janitor-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: hannctlReadStacks
+                Effect: Allow
+                Action: [cloudformation:DescribeStacks, cloudformation:ListStacks, cloudformation:ListStackResources]
+                Resource: "*"
+              - Sid: hannctlDeleteOnlyHannctlStacks
+                Effect: Allow
+                Action: cloudformation:DeleteStack
+                Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/hannctl-*/*
+              - Sid: hannctlPassExecRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt CfnExecRole.Arn
+              - Sid: hannctlPreCleanBuckets
+                Effect: Allow
+                Action: [s3:ListBucket, s3:ListBucketVersions, s3:DeleteObject, s3:DeleteObjectVersion]
+                Resource: [arn:aws:s3:::hannctl-*, arn:aws:s3:::hannctl-*/*]
+              - Sid: hannctlPreCleanAccessKeys
+                Effect: Allow
+                Action: [iam:ListAccessKeys, iam:DeleteAccessKey]
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:user/hannctl-*
+              - Sid: hannctlNotify
+                Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref AlertTopic
+              - Sid: hannctlLogs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt JanitorLogGroup.Arn
+      Tags:
+        - { Key: Name, Value: hannctl-janitor-role }
+
+  JanitorFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: JanitorLogGroup
+    Properties:
+      FunctionName: hannctl-janitor
+      Description: "[hannctl] Deletes expired hannctl scenario stacks only"
+      Runtime: python3.13
+      Architectures: [arm64]
+      Handler: index.handler
+      Timeout: 300
+      MemorySize: 256
+      Role: !GetAtt JanitorRole.Arn
+      LoggingConfig: { LogGroup: !Ref JanitorLogGroup }
+      Environment:
+        Variables:
+          DEFAULT_LIFETIME_HOURS: !Ref DefaultLifetimeHours
+          MONTHLY_CAP_USD: !Ref MonthlyBudgetUsd
+          TOPIC_ARN: !Ref AlertTopic
+          GUARD_STACK: !Ref AWS::StackName
+      Tags:
+        - { Key: Name, Value: hannctl-janitor }
+      Code:
+        ZipFile: |
+          # hannctl-janitor: Project=hannctl 태그 + 이름 hannctl- 접두사를 모두 만족하는 스택만 정리한다.
+          import os, json, datetime, boto3
+
+          cfn = boto3.client("cloudformation")
+          s3 = boto3.resource("s3")
+          iam = boto3.client("iam")
+          sns = boto3.client("sns")
+          DEFAULT_H = float(os.environ["DEFAULT_LIFETIME_HOURS"])
+          GUARD = os.environ["GUARD_STACK"]
+          LIVE = ["CREATE_COMPLETE", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_COMPLETE", "ROLLBACK_COMPLETE",
+                  "CREATE_FAILED", "DELETE_FAILED", "UPDATE_ROLLBACK_FAILED", "ROLLBACK_FAILED"]
+
+          def is_hannctl(stack):
+              tags = {t["Key"]: t["Value"] for t in stack.get("Tags", [])}
+              return stack["StackName"].startswith("hannctl-") and tags.get("Project") == "hannctl" \
+                  and stack["StackName"] != GUARD and tags.get("hannctl:role") != "guard", tags
+
+          def pre_clean(name):
+              # CFN 이 스스로 지우지 못하는 것(비어있지 않은 버킷, 수동 발급 Access Key)만 정리
+              for page in cfn.get_paginator("list_stack_resources").paginate(StackName=name):
+                  for r in page["StackResourceSummaries"]:
+                      pid = r.get("PhysicalResourceId", "")
+                      if not pid.startswith("hannctl-"):
+                          continue
+                      if r["ResourceType"] == "AWS::S3::Bucket":
+                          try:
+                              s3.Bucket(pid).object_versions.delete()
+                          except Exception as e:
+                              print("bucket clean skip", pid, e)
+                      if r["ResourceType"] == "AWS::IAM::User":
+                          for k in iam.list_access_keys(UserName=pid)["AccessKeyMetadata"]:
+                              iam.delete_access_key(UserName=pid, AccessKeyId=k["AccessKeyId"])
+
+          def month_estimate(now):
+              # 이번 달 hannctl 스택 가동시간 × 단가 태그(hannctl:est-usd-per-hour) — 청구서 지연 없이 실시간 추정
+              start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+              total = 0.0
+              for page in cfn.get_paginator("list_stacks").paginate():
+                  for s in page["StackSummaries"]:
+                      if not s["StackName"].startswith("hannctl-") or s["StackName"] == GUARD:
+                          continue
+                      end = s.get("DeletionTime") or now
+                      if end < start:
+                          continue
+                      try:
+                          tags = {t["Key"]: t["Value"] for t in cfn.describe_stacks(StackName=s["StackId"])["Stacks"][0].get("Tags", [])}
+                      except Exception:
+                          continue
+                      if tags.get("Project") != "hannctl":
+                          continue
+                      rate = float(tags.get("hannctl:est-usd-per-hour", "0.25"))
+                      total += max(0.0, (end - max(s["CreationTime"], start)).total_seconds() / 3600) * rate
+              return total
+
+          def handler(event, context):
+              now = datetime.datetime.now(datetime.timezone.utc)
+              deleted, kept = [], []
+              cap = float(os.environ["MONTHLY_CAP_USD"])
+              mtd = month_estimate(now)
+              over_cap = cap > 0 and mtd >= cap   # 0 = 월 상한 없음
+              for page in cfn.get_paginator("describe_stacks").paginate():
+                  for st in page["Stacks"]:
+                      ok, tags = is_hannctl(st)
+                      if not ok or st["StackStatus"] not in LIVE:
+                          continue
+                      age_h = (now - st["CreationTime"]).total_seconds() / 3600
+                      # 유지 시간은 항상 "스택 생성 시각" 기준 (학생이 처음 정하고, 필요하면 늘림)
+                      try:
+                          life_h = float(tags.get("hannctl:lifetime-hours", DEFAULT_H))
+                      except ValueError:
+                          life_h = DEFAULT_H
+                      ttl = f"{life_h:g}h" if life_h > 0 else "무제한"
+                      expired = life_h > 0 and age_h >= life_h   # 0 = 시간 제한 없음
+                      reason = f"유지 시간 {life_h:g}h 만료(생성 후 {age_h:.1f}h)" if expired else ""
+                      if not expired and over_cap:
+                          expired, reason = True, f"월 상한 초과(예상 ${mtd:.2f} >= ${cap:.0f})"
+                      if st["StackStatus"] == "DELETE_FAILED" and (expired or event.get("force")):
+                          reason = reason or "DELETE_FAILED 재시도"
+                      if event.get("dry_run"):
+                          print(json.dumps({"stack": st["StackName"], "expired": expired, "reason": reason}))
+                          continue
+                      if expired:
+                          pre_clean(st["StackName"])
+                          cfn.delete_stack(StackName=st["StackName"])
+                          deleted.append(f'{st["StackName"]} ({reason})')
+                      else:
+                          kept.append(f'{st["StackName"]} (lifetime={ttl}, age={age_h:.1f}h)')
+              print(json.dumps({"month_estimate_usd": round(mtd, 2), "cap_usd": cap, "deleted": deleted, "kept": kept}, ensure_ascii=False))
+              if deleted:
+                  sns.publish(TopicArn=os.environ["TOPIC_ARN"], Subject="[hannctl] janitor cleanup",
+                              Message="자동 삭제된 스택:\n" + "\n".join(deleted) + "\n\n유지 중:\n" + "\n".join(kept))
+              return {"month_estimate_usd": round(mtd, 2), "cap_usd": cap, "deleted": deleted, "kept": kept}
+
+  JanitorSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: hannctl-janitor-schedule
+      Description: "[hannctl] janitor periodic trigger"
+      ScheduleExpression: !Sub rate(${JanitorIntervalMinutes} minutes)
+      State: ENABLED
+      Targets:
+        - Id: hannctl-janitor
+          Arn: !GetAtt JanitorFunction.Arn
+
+  JanitorInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref JanitorFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt JanitorSchedule.Arn
+
+Outputs:
+  CfnExecRoleArn:
+    Value: !GetAtt CfnExecRole.Arn
+  AlertTopicArn:
+    Value: !Ref AlertTopic
+  JanitorFunctionName:
+    Value: !Ref JanitorFunction

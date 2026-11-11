@@ -1,0 +1,8 @@
+# 실행 시 생성되는 로컬 파일 (계정/IP 등 환경 정보가 들어갈 수 있어 공개 저장소에서 제외)
+**/evidence/
+**/.kube/
+**/.tools/
+**/.build/
+*.log
+.DS_Store
+__pycache__/

@@ -1,0 +1,27 @@
+{
+  "scenario": "s5",
+  "title": "시나리오 5 · 내부 API 인증정보 보호와 최소 권한",
+  "target": 88,
+  "items": [
+    {"id": "S5-01", "category": "AWS 인프라", "title": "EKS ACTIVE + Pod Identity Agent + SA↔IAM Role 연결 2개", "points": 8,
+     "checks": [{"key": "cluster_ready", "phase": "after"}, {"key": "pod_identity_agent", "phase": "after"}, {"key": "pod_identity_assoc", "phase": "after"}]},
+    {"id": "S5-02", "category": "FinOps·식별자", "title": "모든 AWS 리소스 hannctl 식별 + 유지시간 자동삭제/월 상한 보호", "points": 7,
+     "checks": [{"key": "tag_compliance", "phase": "after"}, {"key": "finops_guard", "phase": "after"}]},
+    {"id": "S5-03", "category": "문제 재현(Before)", "title": "공용 정적 키로 비인가 Pod 까지 모든 Secret 조회, 개발자 과다 권한 재현", "points": 10,
+     "checks": [{"key": "static_creds", "phase": "before"}, {"key": "intruder_restricted", "phase": "before"}, {"key": "api_restricted", "phase": "before"}, {"key": "dev_get_secrets", "phase": "before"}]},
+    {"id": "S5-04", "category": "정적 자격증명 제거", "title": "Access Key·K8s Secret·참조 0개, 업무 API 는 Pod Identity 임시 자격증명 사용", "points": 12,
+     "checks": [{"key": "static_creds", "phase": "after"}, {"key": "api_identity", "phase": "after"}]},
+    {"id": "S5-05", "category": "Secret 최소 권한", "title": "업무 API 는 allowed 만 읽고 restricted 는 AccessDenied", "points": 13,
+     "checks": [{"key": "api_allowed", "phase": "after"}, {"key": "api_restricted", "phase": "after"}]},
+    {"id": "S5-06", "category": "비인가 워크로드 차단", "title": "비인가 Pod 는 모든 Secret AccessDenied, 노드 IMDS 우회 불가", "points": 15,
+     "checks": [{"key": "intruder_allowed", "phase": "after"}, {"key": "intruder_restricted", "phase": "after"}, {"key": "intruder_identity", "phase": "after"}, {"key": "imds_bypass", "phase": "after"}]},
+    {"id": "S5-07", "category": "사람 권한(RBAC)", "title": "개발자 읽기 전용·운영자 워크로드 관리, Secret 조회·권한 상승·타 NS 거부", "points": 12,
+     "checks": [{"key": "dev_get_pods", "phase": "after"}, {"key": "dev_delete_deploy", "phase": "after"}, {"key": "dev_get_secrets", "phase": "after"}, {"key": "dev_cluster_admin", "phase": "after"}, {"key": "ops_patch_deploy", "phase": "after"}, {"key": "ops_get_secrets", "phase": "after"}, {"key": "ops_other_ns", "phase": "after"}]},
+    {"id": "S5-08", "category": "Pod 보안", "title": "privileged / hostPath / root Pod 생성 거부 (PSA + Kyverno)", "points": 8,
+     "checks": [{"key": "privileged", "phase": "after"}, {"key": "hostpath", "phase": "after"}, {"key": "root", "phase": "after"}]},
+    {"id": "S5-09", "category": "네트워크", "title": "포털→업무 API 정상, 비인가 Pod→업무 API 차단", "points": 7,
+     "checks": [{"key": "web_to_api", "phase": "after"}, {"key": "intruder_to_api", "phase": "after"}]},
+    {"id": "S5-10", "category": "감사 증적", "title": "K8s 거부 요청(EKS audit)과 Secret 접근 신원(CloudTrail)을 각각 확인", "points": 8,
+     "checks": [{"key": "audit_forbidden", "phase": "after"}, {"key": "cloudtrail_secret_access", "phase": "after"}]}
+  ]
+}

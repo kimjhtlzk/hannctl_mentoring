@@ -1,0 +1,19 @@
+# [BEFORE] 통제 전 배포 설정
+#  - Pod 2개 고정 (트래픽이 늘어도 그대로)
+#  - Readiness/Liveness Probe 없음 → 고장 난 Pod 에도 트래픽이 감
+#  - 기본 롤링 업데이트 → 새 버전이 바로 기존 Pod 를 대체
+#  - securityContext 없음 (Pod 보안 기준 미충족)
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: shop-api, namespace: shop, labels: { app: shop-api, hannctl.io/scenario: s1, hannctl.io/phase: before } }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: shop-api } }
+  template:
+    metadata: { labels: { app: shop-api } }
+    spec:
+      containers:
+        - name: app
+          image: __IMAGE__
+          ports: [{ containerPort: 8080 }]
+          resources: { requests: { cpu: 250m, memory: 64Mi }, limits: { cpu: "1", memory: 128Mi } }

@@ -1,0 +1,43 @@
+# ShopNow 기본 리소스: 운영 Namespace + Service + 부하 발생기
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shop
+  labels: { hannctl.io/scenario: s1 }
+---
+# 상품 API 진입점 (클러스터 내부용 ClusterIP — LoadBalancer 는 비용/잔여 리소스 때문에 사용 안 함)
+apiVersion: v1
+kind: Service
+metadata: { name: shop-api, namespace: shop, labels: { hannctl.io/scenario: s1 } }
+spec:
+  selector: { app: shop-api }
+  ports: [{ port: 80, targetPort: 8080 }]
+---
+# 부하 테스트 전용 Namespace (운영 Namespace 와 분리)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shop-loadtest
+  labels: { hannctl.io/scenario: s1 }
+---
+# 부하 발생기: 평소엔 대기, run.sh 가 exec 로 "python3 /app/app.py load ..." 실행
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: loadgen, namespace: shop-loadtest, labels: { app: loadgen, hannctl.io/scenario: s1 } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: loadgen } }
+  template:
+    metadata: { labels: { app: loadgen } }
+    spec:
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: loadgen
+          image: public.ecr.aws/docker/library/python:3.13-alpine
+          command: [sleep, infinity]
+          env: [{ name: PYTHONDONTWRITEBYTECODE, value: "1" }]
+          resources: { requests: { cpu: 200m, memory: 64Mi }, limits: { memory: 256Mi } }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          volumeMounts: [{ name: app, mountPath: /app }]
+      volumes: [{ name: app, configMap: { name: shop-app } }]

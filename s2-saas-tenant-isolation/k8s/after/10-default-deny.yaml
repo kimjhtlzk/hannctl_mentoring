@@ -1,0 +1,10 @@
+# [AFTER 1] 테넌트별 기본 차단(default-deny): 명시적으로 허용하지 않은 모든 Pod 통신(Ingress/Egress) 차단
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny-all, namespace: tenant-a, labels: { hannctl.io/scenario: s2 } }
+spec: { podSelector: {}, policyTypes: [Ingress, Egress] }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny-all, namespace: tenant-b, labels: { hannctl.io/scenario: s2 } }
+spec: { podSelector: {}, policyTypes: [Ingress, Egress] }

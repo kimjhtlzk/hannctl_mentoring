@@ -1,0 +1,11 @@
+# [BEFORE] 편의상 준 과다 권한: 개발자·운영자 그룹 모두 cluster-admin
+#  → 개발자가 운영 Deployment 삭제, Secret(정적 키 포함) 조회까지 가능
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hannctl-legacy-office-admins
+  labels: { hannctl.io/scenario: s5, hannctl.io/phase: before }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: cluster-admin }
+subjects:
+  - { kind: Group, name: "hannctl:office-developers", apiGroup: rbac.authorization.k8s.io }
+  - { kind: Group, name: "hannctl:office-operators", apiGroup: rbac.authorization.k8s.io }

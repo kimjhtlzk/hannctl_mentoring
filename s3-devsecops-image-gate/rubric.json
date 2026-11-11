@@ -1,0 +1,25 @@
+{
+  "scenario": "s3",
+  "title": "시나리오 3 · 취약 이미지 배포 차단 DevSecOps",
+  "target": 88,
+  "items": [
+    {"id": "S3-01", "category": "AWS 인프라", "title": "EKS ACTIVE + ECR(신뢰 레지스트리) + CodeBuild CI 준비", "points": 8,
+     "checks": [{"key": "cluster_ready", "phase": "after"}, {"key": "ecr_ci_ready", "phase": "after"}]},
+    {"id": "S3-02", "category": "FinOps·식별자", "title": "모든 AWS 리소스 hannctl 식별 + 유지시간 자동삭제·월 상한 보호", "points": 7,
+     "checks": [{"key": "tag_compliance", "phase": "after"}, {"key": "finops_guard", "phase": "after"}]},
+    {"id": "S3-03", "category": "문제 재현(Before)", "title": "게이트 없이 취약 이미지가 Push·배포되고, 외부 이미지·특권 Pod 도 허용됨을 재현", "points": 10,
+     "checks": [{"key": "ci_vuln_build", "phase": "before"}, {"key": "vuln_deployed", "phase": "before"}, {"key": "untrusted_registry", "phase": "before"}, {"key": "privileged", "phase": "before"}]},
+    {"id": "S3-04", "category": "CI 보안 게이트", "title": "Trivy HIGH/CRITICAL 위반 이미지는 CI 실패 → ECR 에 Push 되지 않음", "points": 20,
+     "checks": [{"key": "ci_vuln_build", "phase": "after"}, {"key": "gate_reason", "phase": "after"}, {"key": "vuln_in_ecr", "phase": "after"}]},
+    {"id": "S3-05", "category": "정상 배포 유지", "title": "검증된 이미지는 CI 통과 → ECR → EKS 배포, /version 변경, 서비스 정상", "points": 15,
+     "checks": [{"key": "ci_secure_build", "phase": "after"}, {"key": "version_changed", "phase": "after"}, {"key": "service_health", "phase": "after"}]},
+    {"id": "S3-06", "category": "배포 추적성", "title": "커밋↔CI 빌드↔이미지 digest↔Deployment 연결, 취약 이미지 운영 제거", "points": 8,
+     "checks": [{"key": "traceability", "phase": "after"}, {"key": "vuln_deployed", "phase": "after"}]},
+    {"id": "S3-07", "category": "신뢰 레지스트리", "title": "외부 레지스트리 이미지 거부, 승인 ECR 이미지는 허용 (Kyverno)", "points": 12,
+     "checks": [{"key": "untrusted_registry", "phase": "after"}, {"key": "trusted_registry", "phase": "after"}]},
+    {"id": "S3-08", "category": "Pod 보안", "title": "privileged / hostPath / root Pod 생성 거부 (PSA + Kyverno)", "points": 12,
+     "checks": [{"key": "privileged", "phase": "after"}, {"key": "hostpath", "phase": "after"}, {"key": "root", "phase": "after"}]},
+    {"id": "S3-09", "category": "감사 증적", "title": "Trivy 결과·게이트 차단 로그가 증적으로 보관됨", "points": 8,
+     "checks": [{"key": "ci_evidence", "phase": "after"}]}
+  ]
+}

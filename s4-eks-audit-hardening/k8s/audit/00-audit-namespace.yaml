@@ -1,0 +1,35 @@
+# 승인된 보안 점검 전용 Namespace
+#  - kube-bench 는 노드 설정 파일을 읽어야 해서 hostPID/hostPath 가 필요 → 여기서만 privileged 허용
+#  - hannctl.io/protected 라벨이 없으므로 Kyverno 정책 대상도 아님 (예외 구역을 명시적으로 분리)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hannctl-audit
+  labels:
+    hannctl.io/scenario: s4
+    pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: kube-bench, namespace: hannctl-audit, labels: { hannctl.io/scenario: s4 } }
+---
+# kube-bench 정책 점검(4.x)용 읽기 전용 권한 — 쓰기·Secret 조회 없음
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: hannctl-kube-bench-reader, labels: { hannctl.io/scenario: s4 } }
+rules:
+  - apiGroups: [""]
+    resources: [pods, serviceaccounts, namespaces]
+    verbs: [get, list]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [roles, rolebindings, clusterroles, clusterrolebindings]
+    verbs: [get, list]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: hannctl-kube-bench-reader, labels: { hannctl.io/scenario: s4 } }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: hannctl-kube-bench-reader }
+subjects: [{ kind: ServiceAccount, name: kube-bench, namespace: hannctl-audit }]

@@ -1,0 +1,22 @@
+# 신뢰 레지스트리 정책: 승인된 ECR 저장소(hannctl-s3-*) 이미지만 실행 허용
+#  - __REGISTRY__ 는 run.sh 가 <계정ID>.dkr.ecr.<리전>.amazonaws.com 으로 바꿔 적용한다
+#  - CI 게이트를 우회해 kubectl 로 외부 이미지를 직접 띄우려는 시도를 "클러스터 입구"에서 한 번 더 막는다(2단계 방어)
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: hannctl-trusted-registry-only
+  labels: { hannctl.io/managed: "true" }
+  annotations: { policies.kyverno.io/title: "승인된 ECR 이미지만 허용 — 공급망 보안" }
+spec:
+  validationActions: [Deny]
+  matchConstraints:
+    resourceRules:
+      - { apiGroups: [""], apiVersions: [v1], operations: [CREATE, UPDATE], resources: [pods] }
+    namespaceSelector:
+      matchLabels: { hannctl.io/protected: "true" }
+  validations:
+    # 모든 컨테이너(+init 컨테이너)의 이미지 주소가 승인된 ECR 저장소로 시작해야 한다
+    - expression: >-
+        object.spec.containers.all(c, c.image.startsWith('__REGISTRY__/hannctl-s3-')) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c, c.image.startsWith('__REGISTRY__/hannctl-s3-')))
+      message: "[hannctl/Kyverno] 승인된 레지스트리(__REGISTRY__/hannctl-s3-*) 이미지만 허용됩니다."

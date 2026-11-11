@@ -1,0 +1,191 @@
+{
+  "scenario": "s4",
+  "title": "시나리오 4 · EKS 보안 진단·하드닝·감사 증적 자동화",
+  "target": 88,
+  "items": [
+    {
+      "id": "S4-01",
+      "category": "AWS 인프라·FinOps",
+      "title": "EKS ACTIVE + 모든 리소스 hannctl 식별 + 유지시간 자동삭제/월 상한 보호",
+      "points": 8,
+      "checks": [
+        {
+          "key": "cluster_ready",
+          "phase": "after"
+        },
+        {
+          "key": "tag_compliance",
+          "phase": "after"
+        },
+        {
+          "key": "finops_guard",
+          "phase": "after"
+        }
+      ]
+    },
+    {
+      "id": "S4-02",
+      "category": "초기 진단(Before)",
+      "title": "통제 전 문제를 진단·재현 (자체점검 지적, 감사 흔적 없음, 과다 권한, 위험 Pod 허용)",
+      "points": 10,
+      "checks": [
+        {
+          "key": "selfcheck",
+          "phase": "before"
+        },
+        {
+          "key": "audit_events",
+          "phase": "before"
+        },
+        {
+          "key": "dev_get_secrets",
+          "phase": "before"
+        },
+        {
+          "key": "privileged",
+          "phase": "before"
+        }
+      ]
+    },
+    {
+      "id": "S4-03",
+      "category": "CIS 점검(kube-bench)",
+      "title": "kube-bench 자동 점검을 전후 동일 조건으로 실행",
+      "points": 7,
+      "checks": [
+        {
+          "key": "kb_run",
+          "phase": "before"
+        },
+        {
+          "key": "kb_run",
+          "phase": "after"
+        }
+      ]
+    },
+    {
+      "id": "S4-04",
+      "category": "CIS 점검(kube-bench)",
+      "title": "개선 가능한 CIS 항목(4.1.5 default ServiceAccount 미사용)이 FAIL→PASS",
+      "points": 5,
+      "checks": [
+        {
+          "key": "kb_4_1_5",
+          "phase": "before"
+        },
+        {
+          "key": "kb_4_1_5",
+          "phase": "after"
+        }
+      ]
+    },
+    {
+      "id": "S4-05",
+      "category": "자체 점검",
+      "title": "자체 점검 DEMO-01~12 전 항목 통과",
+      "points": 15,
+      "checks": [
+        {
+          "key": "selfcheck",
+          "phase": "after"
+        }
+      ]
+    },
+    {
+      "id": "S4-06",
+      "category": "감사 증적",
+      "title": "EKS 감사 로그 활성화 + 거부 이벤트를 CloudWatch 에서 조회",
+      "points": 15,
+      "checks": [
+        {
+          "key": "audit_log_enabled",
+          "phase": "after"
+        },
+        {
+          "key": "audit_events",
+          "phase": "after"
+        }
+      ]
+    },
+    {
+      "id": "S4-07",
+      "category": "RBAC 최소 권한",
+      "title": "개발자 Secret 조회·배포 삭제·권한 상승, 앱 SA 전체 Secret 조회 거부 + 조회 권한 유지",
+      "points": 15,
+      "checks": [
+        {
+          "key": "dev_get_secrets",
+          "phase": "after"
+        },
+        {
+          "key": "dev_delete_deploy",
+          "phase": "after"
+        },
+        {
+          "key": "dev_create_crb",
+          "phase": "after"
+        },
+        {
+          "key": "app_sa_secrets",
+          "phase": "after"
+        },
+        {
+          "key": "dev_list_pods",
+          "phase": "after"
+        }
+      ]
+    },
+    {
+      "id": "S4-08",
+      "category": "Pod 보안",
+      "title": "privileged / hostPath / root Pod 생성 거부 (PSA + Kyverno)",
+      "points": 10,
+      "checks": [
+        {
+          "key": "privileged",
+          "phase": "after"
+        },
+        {
+          "key": "hostpath",
+          "phase": "after"
+        },
+        {
+          "key": "root",
+          "phase": "after"
+        }
+      ]
+    },
+    {
+      "id": "S4-09",
+      "category": "네트워크·가용성",
+      "title": "다른 팀 → 앱 접근 차단 + 정상 서비스(web→api) 유지",
+      "points": 7,
+      "checks": [
+        {
+          "key": "cross_ns",
+          "phase": "after"
+        },
+        {
+          "key": "app_health",
+          "phase": "after"
+        }
+      ]
+    },
+    {
+      "id": "S4-10",
+      "category": "점검 자동화",
+      "title": "정기 점검 CronJob 등록 + 진단 A·B 자동 수행(10분 이내)",
+      "points": 8,
+      "checks": [
+        {
+          "key": "cronjob",
+          "phase": "after"
+        },
+        {
+          "key": "check_time",
+          "phase": "after"
+        }
+      ]
+    }
+  ]
+}

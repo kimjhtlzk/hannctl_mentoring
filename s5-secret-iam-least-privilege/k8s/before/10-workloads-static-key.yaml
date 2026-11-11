@@ -1,0 +1,71 @@
+# [BEFORE] 정적 Access Key 공유: 업무 API 와 '비인가 Pod(intruder)' 가 같은 공용 키를 쓴다
+#  - 키는 K8s Secret legacy-aws-credentials 에 들어 있다 (Git 설정 파일에 키를 넣은 상황을 모사)
+#  - 공용 IAM User 는 두 비밀값을 모두 읽을 수 있다 → 누가 읽었는지 구분도 안 된다
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: office-api
+  namespace: office
+  labels: { app: office-api, hannctl.io/scenario: s5 }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: office-api } }
+  template:
+    metadata: { labels: { app: office-api } }
+    spec:
+      automountServiceAccountToken: false      # K8s API 토큰은 불필요 (Pod Identity 토큰은 EKS 가 별도 주입)
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: app
+          image: public.ecr.aws/lambda/python:3.13   # boto3 포함 공개 이미지
+          command: [python3, /app/app.py]              # Lambda 런타임 대신 우리 앱 실행
+          env:
+            - { name: ROLE, value: api }
+            - { name: HOME, value: /tmp }
+            - { name: PYTHONDONTWRITEBYTECODE, value: "1" }
+          envFrom:
+            - secretRef: { name: legacy-aws-credentials }   # ⚠️ 정적 Access Key 를 환경변수로 주입
+            - configMapRef: { name: officelink-config }
+          ports: [{ containerPort: 8080 }]
+          readinessProbe: { httpGet: { path: /health, port: 8080 }, periodSeconds: 5 }
+          resources: { requests: { cpu: 25m, memory: 64Mi }, limits: { memory: 192Mi } }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          volumeMounts: [{ name: app, mountPath: /app }, { name: tmp, mountPath: /tmp }]
+      volumes:
+        - { name: app, configMap: { name: officelink-app } }
+        - { name: tmp, emptyDir: {} }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: intruder
+  namespace: office
+  labels: { app: intruder, hannctl.io/scenario: s5 }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: intruder } }
+  template:
+    metadata: { labels: { app: intruder } }
+    spec:
+      automountServiceAccountToken: false      # K8s API 토큰은 불필요 (Pod Identity 토큰은 EKS 가 별도 주입)
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: app
+          image: public.ecr.aws/lambda/python:3.13   # boto3 포함 공개 이미지
+          command: [python3, /app/app.py]              # Lambda 런타임 대신 우리 앱 실행
+          env:
+            - { name: ROLE, value: intruder }
+            - { name: HOME, value: /tmp }
+            - { name: PYTHONDONTWRITEBYTECODE, value: "1" }
+          envFrom:
+            - secretRef: { name: legacy-aws-credentials }   # ⚠️ 정적 Access Key 를 환경변수로 주입
+            - configMapRef: { name: officelink-config }
+          ports: [{ containerPort: 8080 }]
+          readinessProbe: { httpGet: { path: /health, port: 8080 }, periodSeconds: 5 }
+          resources: { requests: { cpu: 25m, memory: 64Mi }, limits: { memory: 192Mi } }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          volumeMounts: [{ name: app, mountPath: /app }, { name: tmp, mountPath: /tmp }]
+      volumes:
+        - { name: app, configMap: { name: officelink-app } }
+        - { name: tmp, emptyDir: {} }

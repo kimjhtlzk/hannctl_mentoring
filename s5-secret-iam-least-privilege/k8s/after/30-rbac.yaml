@@ -1,0 +1,28 @@
+# [AFTER 3] 사람 권한 분리 (office Namespace 한정)
+#  개발자: 조회만 (기본 ClusterRole 'view' — Secret 은 포함되지 않음)
+#  운영자: 워크로드 관리(재시작·스케일·배포) 가능, Secret 조회는 불가
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: hannctl-office-developers-view, namespace: office, labels: { hannctl.io/scenario: s5 } }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: view }
+subjects: [{ kind: Group, name: "hannctl:office-developers", apiGroup: rbac.authorization.k8s.io }]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: hannctl-office-operator, namespace: office, labels: { hannctl.io/scenario: s5 } }
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, services, endpoints, configmaps, events, serviceaccounts]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [delete]                       # 문제 Pod 재생성
+  - apiGroups: [apps]
+    resources: [deployments, deployments/scale, replicasets]
+    verbs: [get, list, watch, patch, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: hannctl-office-operators, namespace: office, labels: { hannctl.io/scenario: s5 } }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: hannctl-office-operator }
+subjects: [{ kind: Group, name: "hannctl:office-operators", apiGroup: rbac.authorization.k8s.io }]

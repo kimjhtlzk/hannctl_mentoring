@@ -1,0 +1,414 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  [hannctl] Scenario 5 - Internal API credential protection and least privilege. VPC + EKS + Pod Identity,
+  Secrets Manager test secrets, per-ServiceAccount IAM roles, legacy static-key IAM user (before state),
+  developer/operator IAM roles mapped via EKS access entries.
+
+# 시나리오 5 - 기업 내부 API 의 인증정보 보호와 최소 권한 (OfficeLink)
+#  VPC(2AZ, Public/Private, NAT 1개) + EKS(Graviton 노드, IMDS hop limit 1) + Pod Identity Agent
+#  + Secrets Manager 테스트 비밀값 2개 + ServiceAccount 별 IAM Role(Pod Identity)
+#  + Before 재현용 레거시 IAM User(정적 키) + 개발자/운영자 IAM Role(EKS Access Entry)
+
+Parameters:
+  ClusterName:        { Type: String, Default: hannctl-s5-office }
+  KubernetesVersion:  { Type: String, Default: "1.35" }
+  VpcCidrPrefix:      { Type: String, Default: "10.15", Description: "VPC = <prefix>.0.0/16" }
+  NodeInstanceTypes:  { Type: CommaDelimitedList, Default: "t4g.medium,t4g.large", Description: "Spot capacity pool (ARM)" }
+  NodeCapacityType:   { Type: String, Default: ON_DEMAND, AllowedValues: [ON_DEMAND, SPOT] }   # SPOT: 약 70% 저렴, 단 실습 중 노드가 교체될 수 있음
+  NodeDesired:        { Type: Number, Default: 1 }
+  DeployerPrincipalArn:
+    Type: String
+    Description: Cluster admin principal, also trusted to assume developer/operator roles (auto-filled by run.sh)
+  EndpointAllowedCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: Allowed CIDR for public EKS API endpoint (run.sh fills in my public IP/32)
+
+Resources:
+  # ============================================================== 네트워크
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Sub ${VpcCidrPrefix}.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-vpc" }]
+  Igw:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-igw" }]
+  IgwAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties: { VpcId: !Ref Vpc, InternetGatewayId: !Ref Igw }
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Sub ${VpcCidrPrefix}.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-public-a" }, { Key: kubernetes.io/role/elb, Value: "1" }]
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Sub ${VpcCidrPrefix}.1.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-public-b" }, { Key: kubernetes.io/role/elb, Value: "1" }]
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Sub ${VpcCidrPrefix}.16.0/20
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-private-a" }, { Key: kubernetes.io/role/internal-elb, Value: "1" }]
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Sub ${VpcCidrPrefix}.32.0/20
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-private-b" }, { Key: kubernetes.io/role/internal-elb, Value: "1" }]
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-public-rt" }]
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: IgwAttach
+    Properties: { RouteTableId: !Ref PublicRouteTable, DestinationCidrBlock: 0.0.0.0/0, GatewayId: !Ref Igw }
+  PublicAssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PublicSubnetA, RouteTableId: !Ref PublicRouteTable }
+  PublicAssocB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PublicSubnetB, RouteTableId: !Ref PublicRouteTable }
+
+  # FinOps: NAT Gateway 1개(단일 AZ)만 사용 — 실습 비용 절감, 운영에서는 AZ별 NAT 권장
+  NatEip:
+    Type: AWS::EC2::EIP
+    DependsOn: IgwAttach
+    Properties:
+      Domain: vpc
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-nat-eip" }]
+  NatGw:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      SubnetId: !Ref PublicSubnetA
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-nat" }]
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-private-rt" }]
+  PrivateDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties: { RouteTableId: !Ref PrivateRouteTable, DestinationCidrBlock: 0.0.0.0/0, NatGatewayId: !Ref NatGw }
+  PrivateAssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PrivateSubnetA, RouteTableId: !Ref PrivateRouteTable }
+  PrivateAssocB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PrivateSubnetB, RouteTableId: !Ref PrivateRouteTable }
+
+  # ============================================================== IAM (클러스터/노드)
+  ClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ClusterName}-cluster-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: eks.amazonaws.com }
+            Action: [sts:AssumeRole, sts:TagSession]
+      ManagedPolicyArns: [arn:aws:iam::aws:policy/AmazonEKSClusterPolicy]
+  NodeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ClusterName}-node-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+
+  # ============================================================== EKS
+  # 감사 로그 그룹을 미리 만들어 보존기간(FinOps)과 삭제(스택과 함께)를 통제
+  ClusterLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/eks/${ClusterName}/cluster
+      RetentionInDays: 3
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-control-plane-logs" }]
+
+  Cluster:
+    Type: AWS::EKS::Cluster
+    DependsOn: ClusterLogGroup
+    Properties:
+      Name: !Ref ClusterName
+      Version: !Ref KubernetesVersion
+      RoleArn: !GetAtt ClusterRole.Arn
+      BootstrapSelfManagedAddons: false
+      UpgradePolicy: { SupportType: STANDARD }        # FinOps: 연장 지원 요금 방지
+      AccessConfig:
+        AuthenticationMode: API
+        BootstrapClusterCreatorAdminPermissions: false
+      ResourcesVpcConfig:
+        SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+        EndpointPublicAccess: true
+        EndpointPrivateAccess: true
+        PublicAccessCidrs: [!Ref EndpointAllowedCidr]
+      Logging:
+        ClusterLogging:
+          EnabledTypes: [{ Type: audit }, { Type: authenticator }]
+      Tags: [{ Key: Name, Value: !Ref ClusterName }]
+
+  DeployerAccess:
+    Type: AWS::EKS::AccessEntry
+    Properties:
+      ClusterName: !Ref Cluster
+      PrincipalArn: !Ref DeployerPrincipalArn
+      AccessPolicies:
+        - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
+          AccessScope: { Type: cluster }
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-deployer-access" }]
+
+  VpcCniAddon:
+    Type: AWS::EKS::Addon
+    Properties:
+      ClusterName: !Ref Cluster
+      AddonName: vpc-cni
+      ResolveConflicts: OVERWRITE
+      ConfigurationValues: '{"enableNetworkPolicy":"true","nodeAgent":{"enablePolicyEventLogs":"true"}}'
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-vpc-cni" }]
+  KubeProxyAddon:
+    Type: AWS::EKS::Addon
+    Properties:
+      ClusterName: !Ref Cluster
+      AddonName: kube-proxy
+      ResolveConflicts: OVERWRITE
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-kube-proxy" }]
+
+  NodeLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub "${ClusterName}-node-lt"
+      LaunchTemplateData:
+        MetadataOptions: { HttpTokens: required, HttpPutResponseHopLimit: 1 }   # IMDSv2 + Pod 의 IMDS 우회 차단
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs: { VolumeSize: 20, VolumeType: gp3, Encrypted: true, DeleteOnTermination: true }
+        TagSpecifications:
+          - ResourceType: instance
+            Tags: [{ Key: Name, Value: !Sub "${ClusterName}-node" }, { Key: Project, Value: hannctl }]
+          - ResourceType: volume
+            Tags: [{ Key: Name, Value: !Sub "${ClusterName}-node-vol" }, { Key: Project, Value: hannctl }]
+          - ResourceType: network-interface
+            Tags: [{ Key: Name, Value: !Sub "${ClusterName}-node-eni" }, { Key: Project, Value: hannctl }]
+      TagSpecifications:
+        - ResourceType: launch-template
+          Tags: [{ Key: Name, Value: !Sub "${ClusterName}-node-lt" }, { Key: Project, Value: hannctl }]
+
+  NodeGroup:
+    Type: AWS::EKS::Nodegroup
+    DependsOn: [VpcCniAddon, KubeProxyAddon]
+    Properties:
+      ClusterName: !Ref Cluster
+      NodegroupName: !Sub "${ClusterName}-ng-${NodeCapacityType}"   # 용량 유형 변경 시 새 이름으로 교체 생성
+      NodeRole: !GetAtt NodeRole.Arn
+      AmiType: AL2023_ARM_64_STANDARD
+      InstanceTypes: !Ref NodeInstanceTypes
+      CapacityType: !Ref NodeCapacityType
+      Subnets: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+      LaunchTemplate: { Id: !Ref NodeLaunchTemplate, Version: !GetAtt NodeLaunchTemplate.LatestVersionNumber }
+      ScalingConfig: { MinSize: 1, DesiredSize: !Ref NodeDesired, MaxSize: 2 }   # FinOps: 필요한 만큼만 (Spot 1대)
+      UpdateConfig: { MaxUnavailable: 1 }
+      Labels: { hannctl.io/scenario: s5 }
+      Tags: { Name: !Sub "${ClusterName}-ng", Project: hannctl }
+
+  CoreDnsAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: NodeGroup
+    Properties:
+      ClusterName: !Ref Cluster
+      AddonName: coredns
+      ResolveConflicts: OVERWRITE
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-coredns" }]
+  MetricsServerAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: NodeGroup
+    Properties:
+      ClusterName: !Ref Cluster
+      AddonName: metrics-server
+      ResolveConflicts: OVERWRITE
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-metrics-server" }]
+
+  # Pod Identity Agent: Pod 가 ServiceAccount 에 연결된 IAM Role 의 임시 자격증명을 받는 통로 (노드마다 1개)
+  PodIdentityAgentAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: NodeGroup
+    Properties:
+      ClusterName: !Ref Cluster
+      AddonName: eks-pod-identity-agent
+      ResolveConflicts: OVERWRITE
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-pod-identity-agent" }]
+
+  # ============================================================== 시나리오 5 전용: 테스트 비밀값
+  # 값은 CloudFormation 이 무작위 생성 (코드·Git 에 비밀값이 존재하지 않음)
+  AllowedSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: hannctl/s5/allowed
+      Description: "[hannctl] s5 test secret - readable by office-api only"
+      GenerateSecretString: { PasswordLength: 24, ExcludePunctuation: true }
+      Tags: [{ Key: Name, Value: hannctl-s5-allowed }]
+  RestrictedSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: hannctl/s5/restricted
+      Description: "[hannctl] s5 test secret - nobody in the cluster should read it"
+      GenerateSecretString: { PasswordLength: 24, ExcludePunctuation: true }
+      Tags: [{ Key: Name, Value: hannctl-s5-restricted }]
+
+  # ============================================================== BEFORE: 레거시 공용 IAM User (정적 키)
+  # 두 비밀값을 모두 읽을 수 있는 "공용 계정". Access Key 는 run.sh 가 Before 단계에서만 발급하고 After 에서 폐기한다.
+  LegacyAppUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: hannctl-s5-legacy-app
+      Policies:
+        - PolicyName: hannctl-s5-legacy-read-all-secrets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: [!Ref AllowedSecret, !Ref RestrictedSecret]
+      Tags: [{ Key: Name, Value: hannctl-s5-legacy-app }]
+
+  # ============================================================== AFTER: Pod Identity (ServiceAccount ↔ IAM Role)
+  # office/app-reader → allowed 비밀값 1개만 읽기
+  AppReaderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ClusterName}-app-reader"
+      Description: "[hannctl] s5 pod identity role - GetSecretValue on hannctl/s5/allowed only"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: pods.eks.amazonaws.com }
+            Action: [sts:AssumeRole, sts:TagSession]
+      Policies:
+        - PolicyName: hannctl-s5-read-allowed-secret-only
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref AllowedSecret
+  # office/no-access → 로그인은 되지만 비밀값 권한은 없음 (AccessDenied 를 명확히 확인하기 위함)
+  NoSecretRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ClusterName}-no-secret"
+      Description: "[hannctl] s5 pod identity role - no secret permissions at all"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: pods.eks.amazonaws.com }
+            Action: [sts:AssumeRole, sts:TagSession]
+  AppReaderAssociation:
+    Type: AWS::EKS::PodIdentityAssociation
+    DependsOn: PodIdentityAgentAddon
+    Properties:
+      ClusterName: !Ref Cluster
+      Namespace: office
+      ServiceAccount: app-reader
+      RoleArn: !GetAtt AppReaderRole.Arn
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-app-reader-pia" }]
+  NoSecretAssociation:
+    Type: AWS::EKS::PodIdentityAssociation
+    DependsOn: PodIdentityAgentAddon
+    Properties:
+      ClusterName: !Ref Cluster
+      Namespace: office
+      ServiceAccount: no-access
+      RoleArn: !GetAtt NoSecretRole.Arn
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-no-access-pia" }]
+
+  # ============================================================== 사람(개발자/운영자) → Kubernetes 그룹
+  # 실제 IAM Role → EKS Access Entry → Kubernetes 그룹 → (Role)Binding 순서로 권한이 결정된다.
+  DeveloperRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ClusterName}-developer"
+      Description: "[hannctl] s5 developer (EKS API access only)"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { AWS: !Ref DeployerPrincipalArn }
+            Action: [sts:AssumeRole, sts:TagSession]
+      Policies:
+        - PolicyName: hannctl-eks-describe-only
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: eks:DescribeCluster, Resource: !GetAtt Cluster.Arn }
+  OperatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ClusterName}-operator"
+      Description: "[hannctl] s5 operator (EKS API access only)"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { AWS: !Ref DeployerPrincipalArn }
+            Action: [sts:AssumeRole, sts:TagSession]
+      Policies:
+        - PolicyName: hannctl-eks-describe-only
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: eks:DescribeCluster, Resource: !GetAtt Cluster.Arn }
+  DeveloperAccess:
+    Type: AWS::EKS::AccessEntry
+    Properties:
+      ClusterName: !Ref Cluster
+      PrincipalArn: !GetAtt DeveloperRole.Arn
+      Username: office-developer
+      KubernetesGroups: [hannctl:office-developers]
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-developer-access" }]
+  OperatorAccess:
+    Type: AWS::EKS::AccessEntry
+    Properties:
+      ClusterName: !Ref Cluster
+      PrincipalArn: !GetAtt OperatorRole.Arn
+      Username: office-operator
+      KubernetesGroups: [hannctl:office-operators]
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-operator-access" }]
+
+Outputs:
+  ClusterName:        { Value: !Ref Cluster }
+  VpcId:              { Value: !Ref Vpc }
+  AllowedSecretName:  { Value: hannctl/s5/allowed }
+  RestrictedSecretName: { Value: hannctl/s5/restricted }
+  LegacyUserName:     { Value: !Ref LegacyAppUser }
+  AppReaderRoleArn:   { Value: !GetAtt AppReaderRole.Arn }
+  NoSecretRoleArn:    { Value: !GetAtt NoSecretRole.Arn }
+  DeveloperRoleArn:   { Value: !GetAtt DeveloperRole.Arn }
+  OperatorRoleArn:    { Value: !GetAtt OperatorRole.Arn }

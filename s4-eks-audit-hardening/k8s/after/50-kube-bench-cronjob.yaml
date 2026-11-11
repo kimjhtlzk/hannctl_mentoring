@@ -1,0 +1,35 @@
+# [AFTER 5] 재발 방지: kube-bench 정기 점검 (매일 00:00 UTC = 09:00 KST)
+#  사람이 기억해서 돌리는 점검 → 스케줄이 돌리는 점검. 결과는 Job 로그로 남는다(최근 3회 보관).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: hannctl-kube-bench-daily
+  namespace: hannctl-audit
+  labels: { hannctl.io/scenario: s4 }
+spec:
+  schedule: "0 0 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata: { labels: { app: kube-bench } }
+        spec:
+          serviceAccountName: kube-bench
+          hostPID: true                     # 노드의 kubelet 프로세스 인자 확인용
+          restartPolicy: Never
+          containers:
+            - name: kube-bench
+              image: docker.io/aquasec/kube-bench:v0.16.0
+              command: [kube-bench, run, --targets, "node,policies,managedservices,controlplane", --benchmark, eks-1.8.0, --json]
+              resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { memory: 256Mi } }
+              volumeMounts:                 # 노드 설정 파일은 읽기 전용으로만
+                - { name: var-lib-kubelet, mountPath: /var/lib/kubelet, readOnly: true }
+                - { name: etc-systemd, mountPath: /etc/systemd, readOnly: true }
+                - { name: etc-kubernetes, mountPath: /etc/kubernetes, readOnly: true }
+          volumes:
+            - { name: var-lib-kubelet, hostPath: { path: /var/lib/kubelet } }
+            - { name: etc-systemd, hostPath: { path: /etc/systemd } }
+            - { name: etc-kubernetes, hostPath: { path: /etc/kubernetes } }

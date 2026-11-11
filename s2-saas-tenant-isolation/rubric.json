@@ -1,0 +1,25 @@
+{
+  "scenario": "s2",
+  "title": "시나리오 2 · B2B SaaS 고객사별 보안 격리",
+  "target": 88,
+  "items": [
+    {"id": "S2-01", "category": "AWS 인프라", "title": "EKS 클러스터 ACTIVE + VPC CNI NetworkPolicy 엔진 활성화", "points": 8,
+     "checks": [{"key": "cluster_ready", "phase": "after"}, {"key": "netpol_engine", "phase": "after"}]},
+    {"id": "S2-02", "category": "FinOps·식별자", "title": "모든 AWS 리소스 hannctl 식별 + 유지시간 자동삭제/월 상한 보호", "points": 7,
+     "checks": [{"key": "tag_compliance", "phase": "after"}, {"key": "finops_guard", "phase": "after"}]},
+    {"id": "S2-03", "category": "문제 재현(Before)", "title": "통제 전 교차 통신·과다 권한·위험 Pod 가 실제로 가능함을 재현", "points": 10,
+     "checks": [{"key": "a_to_b", "phase": "before"}, {"key": "b_to_a", "phase": "before"}, {"key": "rbac_a_list_pods_b", "phase": "before"}, {"key": "privileged", "phase": "before"}]},
+    {"id": "S2-04", "category": "네트워크 격리", "title": "고객사 간 Pod 통신 차단 (A↔B 양방향 + 측면 이동)", "points": 20,
+     "checks": [{"key": "a_to_b", "phase": "after"}, {"key": "b_to_a", "phase": "after"}, {"key": "a_api_to_b", "phase": "after"}]},
+    {"id": "S2-05", "category": "정상 서비스 유지", "title": "같은 테넌트 통신 + DNS 는 정책 적용 후에도 정상", "points": 15,
+     "checks": [{"key": "a_to_a", "phase": "after"}, {"key": "b_to_b", "phase": "after"}, {"key": "dns", "phase": "after"}]},
+    {"id": "S2-06", "category": "권한 격리(RBAC)", "title": "다른 테넌트 조회/변경 및 Secret 조회 거부", "points": 15,
+     "checks": [{"key": "rbac_a_list_pods_b", "phase": "after"}, {"key": "rbac_a_patch_deploy_b", "phase": "after"}, {"key": "rbac_b_list_pods_a", "phase": "after"}, {"key": "rbac_a_get_secrets_a", "phase": "after"}]},
+    {"id": "S2-07", "category": "권한 격리(RBAC)", "title": "자기 테넌트 운영 권한(조회·재시작)은 유지", "points": 5,
+     "checks": [{"key": "rbac_a_list_pods_a", "phase": "after"}, {"key": "rbac_a_patch_deploy_a", "phase": "after"}]},
+    {"id": "S2-08", "category": "Pod 보안", "title": "privileged / hostPath / root Pod 생성 거부 + PSA 누락 시에도 Kyverno 가 차단(이중 방어)", "points": 12,
+     "checks": [{"key": "privileged", "phase": "after"}, {"key": "hostpath", "phase": "after"}, {"key": "root", "phase": "after"}, {"key": "kyverno_layer", "phase": "after"}]},
+    {"id": "S2-09", "category": "감사 증적", "title": "거부된 접근이 EKS 감사 로그(CloudWatch)에 기록됨", "points": 8,
+     "checks": [{"key": "audit_forbidden", "phase": "after"}]}
+  ]
+}

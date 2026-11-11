@@ -1,0 +1,388 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  [hannctl] Scenario 3 - DevSecOps image gate. VPC(2AZ, public/private, 1 NAT) + EKS managed Graviton
+  nodes + ECR(immutable, scan on push) + CodeBuild CI with Trivy HIGH/CRITICAL gate.
+
+# 시나리오 3 - 취약 컨테이너 이미지의 운영 배포를 막는 DevSecOps (ReleaseSafe)
+#  VPC(2AZ, Public/Private, NAT 1개) + EKS(Managed Node Group, Graviton)
+#  + ECR(신뢰 레지스트리) + S3(소스 업로드) + CodeBuild(빌드 → Trivy 게이트 → 통과 시에만 Push)
+
+Parameters:
+  ClusterName:        { Type: String, Default: hannctl-s3-release }
+  KubernetesVersion:  { Type: String, Default: "1.35" }
+  VpcCidrPrefix:      { Type: String, Default: "10.13", Description: "VPC = <prefix>.0.0/16" }
+  # 온디맨드는 첫 번째 종류(t4g.medium)를 쓴다. SPOT 선택 시엔 후보가 많을수록 자리를 얻기 쉽다 (서울 실측 Spot 배치 점수: t4g 2종=1/10, 아래 6종=9/10)
+  NodeInstanceTypes:  { Type: CommaDelimitedList, Default: "t4g.medium,t4g.large,m6g.large,m7g.large,c6g.large,c7g.large", Description: "Spot capacity pool (ARM, Graviton)" }
+  NodeCapacityType:   { Type: String, Default: ON_DEMAND, AllowedValues: [ON_DEMAND, SPOT] }   # SPOT: 약 70% 저렴, 단 실습 중 노드가 교체될 수 있음
+  NodeDesired:        { Type: Number, Default: 1 }                                        # 이 시나리오는 노드 1대로 충분
+  DeployerPrincipalArn:
+    Type: String
+    Description: Cluster admin principal (auto-filled by run.sh)
+  EndpointAllowedCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: Allowed CIDR for public EKS API endpoint (run.sh fills in my public IP/32)
+
+Resources:
+  # ============================================================== 네트워크
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Sub ${VpcCidrPrefix}.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-vpc" }]
+  Igw:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-igw" }]
+  IgwAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties: { VpcId: !Ref Vpc, InternetGatewayId: !Ref Igw }
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Sub ${VpcCidrPrefix}.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-public-a" }, { Key: kubernetes.io/role/elb, Value: "1" }]
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Sub ${VpcCidrPrefix}.1.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-public-b" }, { Key: kubernetes.io/role/elb, Value: "1" }]
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Sub ${VpcCidrPrefix}.16.0/20
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-private-a" }, { Key: kubernetes.io/role/internal-elb, Value: "1" }]
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Sub ${VpcCidrPrefix}.32.0/20
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-private-b" }, { Key: kubernetes.io/role/internal-elb, Value: "1" }]
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-public-rt" }]
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: IgwAttach
+    Properties: { RouteTableId: !Ref PublicRouteTable, DestinationCidrBlock: 0.0.0.0/0, GatewayId: !Ref Igw }
+  PublicAssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PublicSubnetA, RouteTableId: !Ref PublicRouteTable }
+  PublicAssocB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PublicSubnetB, RouteTableId: !Ref PublicRouteTable }
+
+  # FinOps: NAT Gateway 1개(단일 AZ)만 사용 — 실습 비용 절감, 운영에서는 AZ별 NAT 권장
+  NatEip:
+    Type: AWS::EC2::EIP
+    DependsOn: IgwAttach
+    Properties:
+      Domain: vpc
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-nat-eip" }]
+  NatGw:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      SubnetId: !Ref PublicSubnetA
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-nat" }]
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-private-rt" }]
+  PrivateDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties: { RouteTableId: !Ref PrivateRouteTable, DestinationCidrBlock: 0.0.0.0/0, NatGatewayId: !Ref NatGw }
+  PrivateAssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PrivateSubnetA, RouteTableId: !Ref PrivateRouteTable }
+  PrivateAssocB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PrivateSubnetB, RouteTableId: !Ref PrivateRouteTable }
+
+  # ============================================================== IAM (클러스터/노드)
+  ClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ClusterName}-cluster-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: eks.amazonaws.com }
+            Action: [sts:AssumeRole, sts:TagSession]
+      ManagedPolicyArns: [arn:aws:iam::aws:policy/AmazonEKSClusterPolicy]
+  NodeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ClusterName}-node-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+
+  # ============================================================== EKS
+  # 감사 로그 그룹을 미리 만들어 보존기간(FinOps)과 삭제(스택과 함께)를 통제
+  ClusterLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/eks/${ClusterName}/cluster
+      RetentionInDays: 3
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-control-plane-logs" }]
+
+  Cluster:
+    Type: AWS::EKS::Cluster
+    DependsOn: ClusterLogGroup
+    Properties:
+      Name: !Ref ClusterName
+      Version: !Ref KubernetesVersion
+      RoleArn: !GetAtt ClusterRole.Arn
+      BootstrapSelfManagedAddons: false
+      UpgradePolicy: { SupportType: STANDARD }        # FinOps: 연장 지원 요금 방지
+      AccessConfig:
+        AuthenticationMode: API
+        BootstrapClusterCreatorAdminPermissions: false
+      ResourcesVpcConfig:
+        SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+        EndpointPublicAccess: true
+        EndpointPrivateAccess: true
+        PublicAccessCidrs: [!Ref EndpointAllowedCidr]
+      Logging:
+        ClusterLogging:
+          EnabledTypes: [{ Type: audit }, { Type: authenticator }]
+      Tags: [{ Key: Name, Value: !Ref ClusterName }]
+
+  DeployerAccess:
+    Type: AWS::EKS::AccessEntry
+    Properties:
+      ClusterName: !Ref Cluster
+      PrincipalArn: !Ref DeployerPrincipalArn
+      AccessPolicies:
+        - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
+          AccessScope: { Type: cluster }
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-deployer-access" }]
+
+  VpcCniAddon:
+    Type: AWS::EKS::Addon
+    Properties:
+      ClusterName: !Ref Cluster
+      AddonName: vpc-cni
+      ResolveConflicts: OVERWRITE
+      ConfigurationValues: '{"enableNetworkPolicy":"true","nodeAgent":{"enablePolicyEventLogs":"true"}}'
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-vpc-cni" }]
+  KubeProxyAddon:
+    Type: AWS::EKS::Addon
+    Properties:
+      ClusterName: !Ref Cluster
+      AddonName: kube-proxy
+      ResolveConflicts: OVERWRITE
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-kube-proxy" }]
+
+  NodeLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub "${ClusterName}-node-lt"
+      LaunchTemplateData:
+        MetadataOptions: { HttpTokens: required, HttpPutResponseHopLimit: 1 }   # IMDSv2 + Pod 의 IMDS 우회 차단
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs: { VolumeSize: 20, VolumeType: gp3, Encrypted: true, DeleteOnTermination: true }
+        TagSpecifications:
+          - ResourceType: instance
+            Tags: [{ Key: Name, Value: !Sub "${ClusterName}-node" }, { Key: Project, Value: hannctl }]
+          - ResourceType: volume
+            Tags: [{ Key: Name, Value: !Sub "${ClusterName}-node-vol" }, { Key: Project, Value: hannctl }]
+          - ResourceType: network-interface
+            Tags: [{ Key: Name, Value: !Sub "${ClusterName}-node-eni" }, { Key: Project, Value: hannctl }]
+      TagSpecifications:
+        - ResourceType: launch-template
+          Tags: [{ Key: Name, Value: !Sub "${ClusterName}-node-lt" }, { Key: Project, Value: hannctl }]
+
+  NodeGroup:
+    Type: AWS::EKS::Nodegroup
+    DependsOn: [VpcCniAddon, KubeProxyAddon]
+    Properties:
+      ClusterName: !Ref Cluster
+      NodegroupName: !Sub "${ClusterName}-ng-${NodeCapacityType}"   # 사양(SPOT↔ON_DEMAND) 변경 시 새 이름으로 교체 생성
+      NodeRole: !GetAtt NodeRole.Arn
+      AmiType: AL2023_ARM_64_STANDARD
+      InstanceTypes: !Ref NodeInstanceTypes
+      CapacityType: !Ref NodeCapacityType
+      Subnets: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+      LaunchTemplate: { Id: !Ref NodeLaunchTemplate, Version: !GetAtt NodeLaunchTemplate.LatestVersionNumber }
+      ScalingConfig: { MinSize: 1, DesiredSize: !Ref NodeDesired, MaxSize: 2 }
+      UpdateConfig: { MaxUnavailable: 1 }
+      Labels: { hannctl.io/scenario: s3 }
+      Tags: { Name: !Sub "${ClusterName}-ng", Project: hannctl }
+
+  CoreDnsAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: NodeGroup
+    Properties:
+      ClusterName: !Ref Cluster
+      AddonName: coredns
+      ResolveConflicts: OVERWRITE
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-coredns" }]
+  MetricsServerAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: NodeGroup
+    Properties:
+      ClusterName: !Ref Cluster
+      AddonName: metrics-server
+      ResolveConflicts: OVERWRITE
+      Tags: [{ Key: Name, Value: !Sub "${ClusterName}-metrics-server" }]
+
+  # ============================================================== 시나리오 3 전용: 공급망(CI → ECR)
+  # 신뢰 레지스트리: 이 ECR 에 들어온 이미지만 EKS 에서 실행을 허용한다(Kyverno 정책).
+  ReleaseRepo:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: hannctl-s3-release-api
+      ImageTagMutability: IMMUTABLE                  # 같은 태그로 덮어쓰기 금지 → 배포 이력 위변조 방지
+      ImageScanningConfiguration: { ScanOnPush: true }  # 참고용 ECR 기본 스캔(게이트 아님)
+      EncryptionConfiguration: { EncryptionType: AES256 }
+      EmptyOnDelete: true                            # 스택 삭제 시 이미지도 함께 삭제
+      LifecyclePolicy:
+        LifecyclePolicyText: '{"rules":[{"rulePriority":1,"description":"keep last 10","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}'
+      Tags: [{ Key: Name, Value: hannctl-s3-release-api }]
+
+  # 소스 업로드용 버킷: run.sh 가 app/ 을 zip 으로 올리면 CodeBuild 가 가져가 빌드한다(1일 후 자동 삭제).
+  SourceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub hannctl-s3-src-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration: { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true }
+      BucketEncryption:
+        ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 } }]
+      LifecycleConfiguration:
+        Rules: [{ Id: hannctl-expire-1d, Status: Enabled, ExpirationInDays: 1 }]
+      Tags: [{ Key: Name, Value: hannctl-s3-src }]
+
+  CiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/codebuild/hannctl-s3-ci
+      RetentionInDays: 3
+      Tags: [{ Key: Name, Value: hannctl-s3-ci-logs }]
+
+  # CI 역할: 소스 읽기 + 이 ECR 에만 Push + 자기 로그 쓰기 (최소 권한)
+  CiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: hannctl-s3-ci-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: codebuild.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: hannctl-s3-ci-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "${CiLogGroup.Arn}"
+              - Effect: Allow
+                Action: [s3:GetObject, s3:GetObjectVersion]
+                Resource: !Sub "${SourceBucket.Arn}/*"
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:DescribeImages
+                Resource: !GetAtt ReleaseRepo.Arn
+
+  # CI 파이프라인: 빌드 → Trivy 검사 → (GATE=on 이고 HIGH/CRITICAL 있으면) 실패 → 통과한 이미지만 Push
+  CiProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: hannctl-s3-ci
+      Description: "[hannctl] build -> trivy gate -> push to ECR"
+      ServiceRole: !GetAtt CiRole.Arn
+      TimeoutInMinutes: 15
+      Artifacts: { Type: NO_ARTIFACTS }
+      LogsConfig:
+        CloudWatchLogs: { Status: ENABLED, GroupName: !Ref CiLogGroup }
+      Environment:
+        Type: ARM_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux-aarch64-standard:3.0
+        PrivilegedMode: true                          # docker build 에 필요
+        EnvironmentVariables:
+          - { Name: REPO_NAME, Value: !Ref ReleaseRepo }
+          - { Name: REPO_URI, Value: !GetAtt ReleaseRepo.RepositoryUri }
+          - { Name: REGISTRY, Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com" }
+      Source:
+        Type: S3
+        Location: !Sub "${SourceBucket}/source.zip"
+        BuildSpec: |
+          version: 0.2
+          env:
+            variables:
+              TRIVY_VERSION: "0.76.2"   # 버전 고정(재현성)
+              GATE: "on"                # on: HIGH/CRITICAL 발견 시 빌드 실패, off: 검사만 하고 통과(Before)
+              VARIANT: "secure"         # secure | vuln
+              IMAGE_TAG: "dev"
+              APP_VERSION: "dev"
+              GIT_COMMIT: "unknown"
+          phases:
+            install:
+              commands:
+                - curl -sSfL -o /tmp/trivy.tgz https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-ARM64.tar.gz
+                - tar -xzf /tmp/trivy.tgz -C /usr/local/bin trivy && trivy --version | head -1
+            build:
+              commands:
+                - echo "STAGE=build VARIANT=$VARIANT TAG=$IMAGE_TAG GATE=$GATE"
+                - docker build --build-arg VARIANT=$VARIANT --build-arg APP_VERSION=$APP_VERSION --build-arg GIT_COMMIT=$GIT_COMMIT --build-arg BUILD_ID=$CODEBUILD_BUILD_ID -t $REPO_URI:$IMAGE_TAG .
+                - echo "STAGE=scan"
+                - trivy image --quiet --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --format json -o trivy.json $REPO_URI:$IMAGE_TAG
+                - python3 trivy_summary.py trivy.json | tee trivy-summary.txt
+                # ↓ 보안 게이트: GATE=on 이고 HIGH/CRITICAL 이 1건이라도 있으면 exit 1 → 아래 push 단계는 실행되지 않는다
+                - |
+                  FOUND=$(grep -o 'TRIVY_TOTAL=[0-9]*' trivy-summary.txt | cut -d= -f2)
+                  if [ "$GATE" != "on" ]; then R=SKIPPED; elif [ "$FOUND" -gt 0 ]; then R=BLOCKED; else R=PASSED; fi
+                  echo "GATE_RESULT=$R (GATE=$GATE, HIGH/CRITICAL $FOUND 건)"
+                  if [ "$R" = "BLOCKED" ]; then echo "ECR Push 중단"; exit 1; fi
+                - echo "STAGE=push"
+                - aws ecr get-login-password | docker login --username AWS --password-stdin $REGISTRY
+                - docker push $REPO_URI:$IMAGE_TAG
+                - echo "IMAGE_DIGEST=$(aws ecr describe-images --repository-name $REPO_NAME --image-ids imageTag=$IMAGE_TAG --query 'imageDetails[0].imageDigest' --output text)"
+      Tags: [{ Key: Name, Value: hannctl-s3-ci }]
+
+Outputs:
+  ClusterName:   { Value: !Ref Cluster }
+  VpcId:         { Value: !Ref Vpc }
+  RepoUri:       { Value: !GetAtt ReleaseRepo.RepositoryUri }
+  SourceBucket:  { Value: !Ref SourceBucket }
+  CiProject:     { Value: !Ref CiProject }

@@ -1,0 +1,29 @@
+{
+  "scenario": "s1",
+  "title": "시나리오 1 · 쇼핑몰 안전한 배포·장애 대응 (ShopNow)",
+  "target": 88,
+  "items": [
+    {"id": "S1-01", "category": "AWS 인프라", "title": "EKS 클러스터 ACTIVE (VPC·노드·ECR·CodeBuild 포함 스택 정상)", "points": 5,
+     "checks": [{"key": "cluster_ready", "phase": "after"}]},
+    {"id": "S1-02", "category": "FinOps·식별자", "title": "모든 AWS 리소스 hannctl 식별 + 유지 시간 자동삭제/월 상한 보호", "points": 7,
+     "checks": [{"key": "tag_compliance", "phase": "after"}, {"key": "finops_guard", "phase": "after"}]},
+    {"id": "S1-03", "category": "문제 재현(Before)", "title": "고정 Pod·버그 배포 장애·취약 이미지 유입·위험 Pod 허용이 실제로 재현됨", "points": 10,
+     "checks": [{"key": "pod_scaling", "phase": "before"}, {"key": "bad_deploy", "phase": "before"}, {"key": "ci_vuln_image", "phase": "before"}, {"key": "privileged", "phase": "before"}]},
+    {"id": "S1-04", "category": "운영: 자동 확장", "title": "부하 증가 시 HPA 가 Pod 를 2개 초과로 확장", "points": 12,
+     "checks": [{"key": "pod_scaling", "phase": "after"}]},
+    {"id": "S1-05", "category": "운영: 노드 확장", "title": "Pending Pod 발생 시 Cluster Autoscaler 가 노드 추가", "points": 8,
+     "checks": [{"key": "node_scaling", "phase": "after"}]},
+    {"id": "S1-06", "category": "정상 서비스 유지", "title": "부하 중에도 요청 성공률 99% 이상", "points": 8,
+     "checks": [{"key": "load_success", "phase": "after"}]},
+    {"id": "S1-07", "category": "장애 대응: 안전한 배포", "title": "버그 버전 배포 중에도 성공률 95% 이상 (Readiness + maxUnavailable 0)", "points": 12,
+     "checks": [{"key": "bad_deploy", "phase": "after"}]},
+    {"id": "S1-08", "category": "장애 대응: 복구", "title": "롤백으로 정상 버전(v1) 복구 + 복구 시간 측정", "points": 8,
+     "checks": [{"key": "rollback", "phase": "after"}]},
+    {"id": "S1-09", "category": "공급망 보안", "title": "Trivy 게이트: 취약 이미지 ECR 유입 차단, 정상 이미지는 통과", "points": 15,
+     "checks": [{"key": "ci_vuln_image", "phase": "after"}, {"key": "ci_secure_image", "phase": "after"}]},
+    {"id": "S1-10", "category": "Pod 보안", "title": "privileged / hostPath / root Pod 생성 거부 (PSA + Kyverno)", "points": 10,
+     "checks": [{"key": "privileged", "phase": "after"}, {"key": "hostpath", "phase": "after"}, {"key": "root", "phase": "after"}]},
+    {"id": "S1-11", "category": "관측", "title": "Prometheus 가 HPA/Pod 지표를 실제 수집 (Grafana 로 시각화)", "points": 5,
+     "checks": [{"key": "monitoring", "phase": "after"}]}
+  ]
+}

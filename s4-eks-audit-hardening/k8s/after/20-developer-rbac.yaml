@@ -1,0 +1,11 @@
+# [AFTER 2] 개발자 최소 권한: audit-app 조회만 (기본 제공 ClusterRole "view" = Secret 제외 읽기 전용)
+#  RoleBinding 이므로 audit-app Namespace 안에서만 유효하다.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hannctl-developers-view
+  namespace: audit-app
+  labels: { hannctl.io/scenario: s4 }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: view }
+subjects:
+  - { kind: Group, name: "hannctl:developers", apiGroup: rbac.authorization.k8s.io }

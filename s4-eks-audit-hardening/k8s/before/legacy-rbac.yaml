@@ -1,0 +1,20 @@
+# [BEFORE] 시간이 지나며 쌓인 과다 권한 (감사에서 흔히 발견되는 유형)
+#  1) 개발자 그룹 전체에 cluster-admin  → 운영 Secret 조회·삭제까지 가능
+#  2) 앱의 default ServiceAccount 에 cluster-admin → 앱 Pod 가 탈취되면 클러스터 전체 장악
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hannctl-legacy-developers-admin
+  labels: { hannctl.io/scenario: s4, hannctl.io/phase: before }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: cluster-admin }
+subjects:
+  - { kind: Group, name: "hannctl:developers", apiGroup: rbac.authorization.k8s.io }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hannctl-legacy-app-sa-admin
+  labels: { hannctl.io/scenario: s4, hannctl.io/phase: before }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: cluster-admin }
+subjects:
+  - { kind: ServiceAccount, name: default, namespace: audit-app }
