@@ -48,7 +48,7 @@ flowchart LR
 
 ---
 
-## 🚀 학생용 빠른 시작
+## 🚀 멘티용 빠른 시작
 
 **1) 원하는 시나리오 폴더만 내려받기** (예: 시나리오 2)
 
@@ -61,7 +61,7 @@ cd s2-saas-tenant-isolation
 **2) 점검 → 실행 → 삭제**
 
 ```bash
-./run.sh doctor      # 도구·자격 증명·권한·한도 점검 (kubectl/helm 은 자동 설치)
+./run.sh doctor      # 없는 도구 자동 설치 + 자격 증명·권한·한도 점검
 ./run.sh demo        # 전부 자동 (첫 실행 25~35분)
 ./run.sh down        # 끝나면 삭제
 ```
@@ -70,7 +70,7 @@ cd s2-saas-tenant-isolation
 
 | 지원 환경 | 비고 |
 |---|---|
-| macOS · Ubuntu · CentOS/Rocky · Amazon Linux | bash, python3, curl, AWS CLI v2만 있으면 된다 (kubectl/helm 자동 설치) |
+| macOS · Ubuntu · CentOS/Rocky · Amazon Linux | bash 와 인터넷만 있으면 된다. python3·AWS CLI·kubectl·helm 등은 **없는 것만 자동 설치**(`tools/install-tools.sh`, 있으면 건너뜀) |
 | **AWS CloudShell** | 설치할 것이 없어 가장 쉽다 |
 | Docker | **필요 없음** — 이미지 빌드는 AWS CodeBuild에서 수행 |
 
@@ -108,7 +108,7 @@ cd s2-saas-tenant-isolation
 | 항목 | 값 |
 |---|---|
 | 시나리오 1개 실행 | 약 **$0.21~0.25/시간 (≈ 300~350원)**, `demo` 1회 약 **$0.15~0.25 (≈ 200~350원)** |
-| 유지 시간 | `demo` 시작 시 학생이 정함 (기본 **6시간**, 만든 시각 기준) → 지나면 자동 삭제. 방치해도 최대 약 $1.5 (≈ 2,000원) |
+| 유지 시간 | `demo` 시작 시 멘티가 정함 (기본 **6시간**, 만든 시각 기준) → 지나면 자동 삭제. 방치해도 최대 약 $1.5 (≈ 2,000원) |
 | 월 상한 | **$20 (≈ 2.8만원)** — 도달하면 모든 hannctl 스택 자동 삭제 + 새 배포 거부 |
 
 처음 실행할 때 공통 안전장치 스택 **`hannctl-finops-guard`** 가 한 번 만들어진다.
@@ -141,8 +141,8 @@ cd s2-saas-tenant-isolation
 ```text
 hannctl_mentoring/
 ├── s1-shop-deploy-resilience/       ┐
-├── s2-saas-tenant-isolation/        │  시나리오 폴더 = 학생 1개 조
-├── s3-devsecops-image-gate/         │  폴더 하나만으로 단독 실행 가능
+├── s2-saas-tenant-isolation/        │  시나리오 폴더 = 멘티 1개 조
+├── s3-devsecops-image-gate/         │  각 폴더가 독립적으로 실행된다
 ├── s4-eks-audit-hardening/          │  (README · START_HERE · run.sh · cfn · k8s · lib · tools)
 ├── s5-secret-iam-least-privilege/   ┘
 └── _shared/                         # [관리자용] 공통 파일 원본 → sync.sh 로 각 시나리오에 복사
@@ -162,7 +162,7 @@ hannctl_mentoring/
 
 ---
 
-## 🧑‍🏫 강사·관리자용
+## 🧑‍🏫 멘토·관리자용
 
 | 작업 | 방법 |
 |---|---|

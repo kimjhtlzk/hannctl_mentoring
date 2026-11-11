@@ -99,11 +99,21 @@ choose_lifetime() { # 처음 시작할 때 유지 시간을 정한다 (이미 �
 
 iso_after_hours() { python3 -c 'import datetime,sys;print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=float(sys.argv[1]))).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$1"; }
 
+tools_ready() { # python3(3.8+), AWS CLI v2, kubectl, helm, curl 이 모두 있는가
+  command -v curl >/dev/null 2>&1 && command -v kubectl >/dev/null 2>&1 && command -v helm >/dev/null 2>&1 &&
+  command -v python3 >/dev/null 2>&1 && python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null &&
+  aws --version 2>&1 | grep -q 'aws-cli/2'
+}
+
+ensure_tools() { # 없는 도구만 자동 설치 (있으면 아무것도 하지 않음)
+  tools_ready && return 0
+  warn "필요한 도구가 없어 자동 설치합니다 (tools/install-tools.sh — 이미 있는 것은 건너뜀)"
+  bash "$SCEN_DIR/tools/install-tools.sh" || die "도구 설치 실패 — START_HERE.md 2단계 참고"
+  hash -r
+}
+
 preflight() {
-  command -v kubectl >/dev/null 2>&1 && command -v helm >/dev/null 2>&1 || {
-    warn "kubectl/helm 이 없어 자동 설치합니다 (tools/install-tools.sh → $SCEN_DIR/.tools/bin)"
-    bash "$SCEN_DIR/tools/install-tools.sh" || die "도구 설치 실패"
-  }
+  ensure_tools
   need aws kubectl helm python3 curl
   aws sts get-caller-identity >/dev/null 2>&1 || die "AWS 자격 증명 확인 실패 (프로필: $HANNCTL_PROFILE)"
   info "AWS 계정 $(account_id) / 프로필 $HANNCTL_PROFILE / 리전 $HANNCTL_REGION"
@@ -521,7 +531,7 @@ ${C_BOLD}$SCENARIO_TITLE${C_0}
   watch              (다른 터미널에서) 클러스터 상태 + 진행 단계 실시간 관찰
   cost               이번 달 hannctl 누적 예상 비용 / 상한
   cap <USD>          월 비용 상한 변경 (기본 20, 0 = 끄기)
-  kubeconfig         export KUBECONFIG=... 출력 (직접 kubectl 사용 시)
+  kubeconfig         KUBECONFIG·PATH 설정문 출력 → eval "$(./run.sh kubeconfig)" (직접 kubectl/aws 사용 시)
   lifetime <HOURS>   유지 시간 변경 — "생성 시각부터 HOURS 시간" (예: 6시간 중 4시간 지난 뒤 9 → 남은 5시간, 0 = 무제한)
   down               이 시나리오의 모든 AWS 리소스 삭제(스택 + 내용물) 및 잔여 확인
   down-all           down + 공통 FinOps Guard(janitor/예산)까지 삭제(다른 hannctl 스택이 없을 때)
@@ -660,19 +670,21 @@ cmd_down_all() { # 이 시나리오 + (다른 hannctl 시나리오 스택이 없
 cmd_doctor() { # 처음 실행 전 환경 점검 — 무엇이 부족한지 ✔/✘ 로 알려준다
   banner "DOCTOR — 실행 환경 점검 ($SCENARIO_TITLE)"
   local bad=0
+  tools_ready || { warn "없는 도구를 먼저 설치합니다"; bash "$SCEN_DIR/tools/install-tools.sh"; hash -r; }
   chk() { if eval "$2" >/dev/null 2>&1; then ok "$1"; else err "$1 → $3"; bad=$((bad + 1)); fi; }
   chk "bash / OS: $(uname -s) $(uname -m)" "true" ""
-  chk "python3 ($(python3 --version 2>&1))" "command -v python3" "python3 설치 (START_HERE.md 2단계)"
+  chk "python3 ($(python3 --version 2>&1))" "python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)'" "./tools/install-tools.sh 실행 (START_HERE.md 2단계)"
   chk "curl" "command -v curl" "curl 설치"
-  chk "AWS CLI v2 ($(aws --version 2>&1 | cut -d' ' -f1))" "aws --version 2>&1 | grep -q 'aws-cli/2'" "AWS CLI v2 설치 (./tools/install-tools.sh 또는 START_HERE.md)"
-  if ! command -v kubectl >/dev/null 2>&1 || ! command -v helm >/dev/null 2>&1; then
-    warn "kubectl/helm 없음 → 자동 설치"; bash "$SCEN_DIR/tools/install-tools.sh" >/dev/null 2>&1
-  fi
+  chk "AWS CLI v2 ($(aws --version 2>&1 | cut -d' ' -f1))" "aws --version 2>&1 | grep -q 'aws-cli/2'" "./tools/install-tools.sh 실행 (START_HERE.md 2단계)"
   chk "kubectl ($(kubectl version --client 2>/dev/null | head -1))" "command -v kubectl" "./tools/install-tools.sh 실행"
   chk "helm ($(helm version --short 2>/dev/null))" "command -v helm" "./tools/install-tools.sh 실행"
   chk "AWS 자격 증명 (프로필 $HANNCTL_PROFILE)" "aws sts get-caller-identity" "aws configure 실행 (START_HERE.md 3단계)"
+  if ! aws sts get-caller-identity >/dev/null 2>&1; then   # 자격 증명이 없으면 나머지 AWS 점검은 의미가 없다
+    info "AWS 권한·한도 점검은 자격 증명을 설정한 뒤 다시 ./run.sh doctor 로 확인합니다"
+    err "$bad 개 항목을 해결한 뒤 다시 ./run.sh doctor"; return 1
+  fi
   chk "리전 $HANNCTL_REGION 에서 EKS 사용 가능" "aws eks list-clusters" "권한 또는 리전 확인"
-  chk "CloudFormation/IAM 권한" "aws cloudformation list-stacks --max-items 1 && aws iam list-roles --max-items 1" "관리자급 권한 필요 — 강사에게 문의"
+  chk "CloudFormation/IAM 권한" "aws cloudformation list-stacks --max-items 1 && aws iam list-roles --max-items 1" "관리자급 권한 필요 — 멘토에게 문의"
   local vpcs eips; vpcs=$(aws ec2 describe-vpcs --query 'length(Vpcs)' --output text 2>/dev/null || echo 9)
   eips=$(aws ec2 describe-addresses --query 'length(Addresses)' --output text 2>/dev/null || echo 9)
   if [ "$(stack_status "$STACK")" != NONE ]; then ok "VPC: 이 시나리오 스택이 이미 있음 (현재 ${vpcs}/5)"
@@ -686,6 +698,7 @@ cmd_doctor() { # 처음 실행 전 환경 점검 — 무엇이 부족한지 ✔/
 
 dispatch() {
   local cmd=${1:-help}; shift || true
+  case "$cmd" in help|-h|--help|kubeconfig) ;; *) ensure_tools ;; esac   # 모든 명령 전에 도구 확인
   case "$cmd" in
     up) [ "${1:-}" = --hours ] && HANNCTL_LIFETIME_HOURS=${2:-}; cmd_up ;;
     demo) cmd_demo "$@" ;;
@@ -698,7 +711,7 @@ dispatch() {
     cost) cmd_cost ;;
     cap) cmd_cap "$@" ;;
     doctor) cmd_doctor ;;
-    kubeconfig) echo "export KUBECONFIG=$SCEN_DIR/.kube/config" ;;
+    kubeconfig) echo "export KUBECONFIG=$SCEN_DIR/.kube/config; export PATH=$SCEN_DIR/.tools/bin:\$PATH" ;;
     lifetime|extend) preflight; set_lifetime "$STACK" "${1:-}" ;;
     down) cmd_down ;;
     down-all) cmd_down_all ;;

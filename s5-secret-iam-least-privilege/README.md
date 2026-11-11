@@ -65,7 +65,7 @@ cd s5-secret-iam-least-privilege
 - 진행 중 **다른 터미널에서 `./run.sh watch`** 를 켜 두면 Pod가 쓰는 ServiceAccount, 정적 키 개수, 네트워크 정책이 바뀌는 모습이 실시간으로 보인다.
 - CloudTrail 기록 대기 시간은 `CLOUDTRAIL_WAIT_SECONDS=300 ./run.sh demo`처럼 줄일 수 있다(줄이면 감사 항목이 미확인으로 남을 수 있다).
 
-> 처음 한 번 필요한 것: AWS CLI v2와 자격 증명, python3. kubectl/helm은 없으면 자동 설치된다.
+> 처음 한 번 필요한 것: AWS 자격 증명(`aws configure`). python3·AWS CLI·kubectl·helm 등 필요한 도구는 **없는 것만 자동 설치**된다(`tools/install-tools.sh`, 이미 있으면 건너뜀). 자세한 준비는 [START_HERE.md](START_HERE.md) 참고.
 > macOS, Ubuntu, CentOS/Rocky, AWS CloudShell에서 동작한다.
 
 ---
@@ -446,7 +446,7 @@ s5-secret-iam-least-privilege/
 │   ├── policies/             # Kyverno 정책 (privileged / hostPath / root)
 │   └── attack/               # 위험 Pod 예시 (서버측 dry-run 으로만 사용)
 ├── lib/                      # 공통 스크립트 (common.sh, score.py, tagcheck.py)
-├── tools/install-tools.sh    # kubectl/helm 자동 설치
+├── tools/install-tools.sh    # 필요한 도구 확인 → 없는 것만 설치 (python3·AWS CLI·kubectl·helm 등, macOS/Linux)
 └── evidence/                 # 실행 결과 (results.jsonl, REPORT.md/html, before/, after/) — 비밀값·키 원문은 저장하지 않음
 ```
 

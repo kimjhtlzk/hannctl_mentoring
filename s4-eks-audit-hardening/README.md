@@ -69,7 +69,7 @@ cd s4-eks-audit-hardening
 
 다른 터미널에서 `./run.sh watch`를 켜 두면 권한, 정책, CronJob이 바뀌는 과정을 실시간으로 볼 수 있다.
 
-> 처음 한 번 필요한 것: AWS CLI v2와 자격 증명(`aws configure`), python3. kubectl/helm은 없으면 자동 설치된다.
+> 처음 한 번 필요한 것: AWS 자격 증명(`aws configure`). python3·AWS CLI·kubectl·helm 등 필요한 도구는 **없는 것만 자동 설치**된다(`tools/install-tools.sh`, 이미 있으면 건너뜀). 자세한 준비는 [START_HERE.md](START_HERE.md) 참고.
 > macOS, Ubuntu, CentOS/Rocky, AWS CloudShell에서 동작한다(로컬 Docker 불필요).
 
 ---
@@ -459,7 +459,7 @@ s4-eks-audit-hardening/
 │   ├── policies/             # Kyverno 정책 (privileged / hostPath / root)
 │   └── attack/               # 위험 Pod 예시 (서버측 dry-run 으로만 사용)
 ├── lib/                      # 공통 스크립트 (common.sh, score.py, tagcheck.py)
-├── tools/install-tools.sh    # kubectl/helm 자동 설치
+├── tools/install-tools.sh    # 필요한 도구 확인 → 없는 것만 설치 (python3·AWS CLI·kubectl·helm 등, macOS/Linux)
 └── evidence/                 # 실행마다 생성: before/ after/ (kube-bench·자체점검 원본), COMPLIANCE.md, REPORT.md/html
 ```
 

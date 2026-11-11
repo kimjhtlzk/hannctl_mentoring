@@ -328,7 +328,7 @@ Resources:
                       if not ok or st["StackStatus"] not in LIVE:
                           continue
                       age_h = (now - st["CreationTime"]).total_seconds() / 3600
-                      # 유지 시간은 항상 "스택 생성 시각" 기준 (학생이 처음 정하고, 필요하면 늘림)
+                      # 유지 시간은 항상 "스택 생성 시각" 기준 (멘티가 처음 정하고, 필요하면 늘림)
                       try:
                           life_h = float(tags.get("hannctl:lifetime-hours", DEFAULT_H))
                       except ValueError:

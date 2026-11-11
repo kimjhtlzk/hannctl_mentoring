@@ -62,7 +62,7 @@ cd s3-devsecops-image-gate
 
 - 끝나면 `evidence/latest/REPORT.html`이 열린다(점수, Before→After 비교, 타임라인).
 - 진행 중에 **다른 터미널에서 `./run.sh watch`** 를 실행하면 실행 중인 이미지, 배포 이력, ECR 이미지 목록, CI 빌드 상태를 실시간으로 볼 수 있다.
-- 처음에는 AWS CLI v2와 자격 증명, python3만 있으면 된다. kubectl/helm은 자동 설치된다. **로컬 Docker는 필요 없다**(빌드는 AWS CodeBuild에서 한다).
+- 처음에는 AWS 자격 증명만 있으면 된다. python3·AWS CLI·kubectl·helm 등은 **없는 것만 자동 설치**된다(`tools/install-tools.sh`). **로컬 Docker는 필요 없다**(빌드는 AWS CodeBuild에서 한다).
 
 ---
 
@@ -409,7 +409,7 @@ s3-devsecops-image-gate/
 │   ├── base/                  # release Namespace, Deployment, Service, 정상 비교용 Pod
 │   ├── policies/              # Kyverno ValidatingPolicy: trusted-registry + baseline(privileged/hostPath/root)
 │   └── attack/                # 외부 이미지·위험 Pod 예시 (서버측 dry-run 으로만 사용)
-├── lib/  tools/               # 공통 스크립트, kubectl/helm 자동 설치
+├── lib/  tools/               # 공통 스크립트, 필요한 도구 자동 설치(없는 것만)
 └── evidence/                  # 실행마다 생성: CI 로그, admission 결과, REPORT.md/html
 ```
 

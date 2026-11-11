@@ -61,7 +61,7 @@ cd s1-shop-deploy-resilience
 `demo`가 끝나면 `evidence/latest/REPORT.html`이 열린다. 점수, Before→After 비교, 전환 타임라인을 한 화면에서 볼 수 있다.
 **다른 터미널에서 `./run.sh watch`** 를 켜 두면 HPA 목표값, Pod, 노드 수가 바뀌는 모습을 실시간으로 볼 수 있다.
 
-> 처음 한 번 필요한 것: AWS CLI v2와 자격 증명(`aws configure`), python3. kubectl/helm은 없으면 자동 설치된다.
+> 처음 한 번 필요한 것: AWS 자격 증명(`aws configure`). python3·AWS CLI·kubectl·helm 등 필요한 도구는 **없는 것만 자동 설치**된다(`tools/install-tools.sh`, 이미 있으면 건너뜀). 자세한 준비는 [START_HERE.md](START_HERE.md) 참고.
 > **로컬 Docker 불필요**: 이미지 빌드는 AWS CodeBuild에서 한다. macOS, Ubuntu, CentOS/Rocky, AWS CloudShell에서 동작한다.
 
 ---
@@ -440,7 +440,7 @@ s1-shop-deploy-resilience/
 │   ├── attack/               # 위험 Pod 예시 (서버측 dry-run 으로만 사용)
 │   └── monitoring-values.yaml  # Prometheus/Grafana 경량 설정
 ├── lib/                      # 공통 스크립트 (common.sh, 채점기 score.py, 태그 감사 tagcheck.py)
-├── tools/install-tools.sh    # kubectl/helm 자동 설치 (macOS/Linux, sudo 불필요)
+├── tools/install-tools.sh    # 필요한 도구 확인 → 없는 것만 설치 (python3·AWS CLI·kubectl·helm 등, macOS/Linux)
 └── evidence/                 # 실행마다 생성: results.jsonl, REPORT.md/html, before/·after/ 증적 (부하 CSV, CI 로그, 거부 메시지 등)
 ```
 
