@@ -271,13 +271,14 @@ Resources:
           sns = boto3.client("sns")
           DEFAULT_H = float(os.environ["DEFAULT_LIFETIME_HOURS"])
           GUARD = os.environ["GUARD_STACK"]
+          SHARED = (GUARD, "hannctl-identity")   # 공통 스택(가드·작업용 신원)은 삭제/비용 계산 대상이 아니다
           LIVE = ["CREATE_COMPLETE", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_COMPLETE", "ROLLBACK_COMPLETE",
                   "CREATE_FAILED", "DELETE_FAILED", "UPDATE_ROLLBACK_FAILED", "ROLLBACK_FAILED"]
 
           def is_hannctl(stack):
               tags = {t["Key"]: t["Value"] for t in stack.get("Tags", [])}
               return stack["StackName"].startswith("hannctl-") and tags.get("Project") == "hannctl" \
-                  and stack["StackName"] != GUARD and tags.get("hannctl:role") != "guard", tags
+                  and stack["StackName"] not in SHARED and tags.get("hannctl:role") not in ("guard", "identity"), tags
 
           def pre_clean(name):
               # CFN 이 스스로 지우지 못하는 것(비어있지 않은 버킷, 수동 발급 Access Key)만 정리
@@ -301,7 +302,7 @@ Resources:
               total = 0.0
               for page in cfn.get_paginator("list_stacks").paginate():
                   for s in page["StackSummaries"]:
-                      if not s["StackName"].startswith("hannctl-") or s["StackName"] == GUARD:
+                      if not s["StackName"].startswith("hannctl-") or s["StackName"] in SHARED:
                           continue
                       end = s.get("DeletionTime") or now
                       if end < start:

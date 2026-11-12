@@ -40,7 +40,7 @@ cd s1-shop-deploy-resilience
 |---|---|---|
 | curl · tar · gzip · unzip | 내려받기·압축 해제 | OS 패키지 관리자 (apt / dnf / yum / zypper / brew) |
 | **python3** (3.8 이상) | 테스트·채점·비용 계산 | OS 패키지 관리자 → 안 되면(sudo 없음 등) **이 폴더의 `.tools/python` 에 독립 실행형 Python 설치** |
-| **AWS CLI v2** | AWS 에 명령 보내기 | 이 폴더의 `.tools/aws-cli` 에 설치 (macOS 도 관리자 암호 불필요) |
+| **AWS CLI v2** (2.32 이상) | AWS 에 명령 보내기, 브라우저 로그인(`aws login`) | 없거나 2.32 보다 오래됐으면 이 폴더의 `.tools/aws-cli` 에 설치 (기존 것은 그대로, macOS 도 관리자 암호 불필요) |
 | **kubectl · helm** | Kubernetes 조작 | 이 폴더의 `.tools/bin` 에 설치 |
 | Docker | **필요 없음** | 이미지 빌드는 AWS CodeBuild 에서 수행 |
 
@@ -62,22 +62,42 @@ cd s1-shop-deploy-resilience
 | **macOS** | 관리자 암호 없이 설치된다 (Homebrew 가 있으면 python 은 brew 로 설치) |
 | **Ubuntu / Debian · CentOS / Rocky / Amazon Linux** | curl·unzip·python3 이 없으면 `sudo` 암호를 물을 수 있다. sudo 를 못 쓰면 python3 은 폴더 안에 설치되고, curl 이 없으면 관리자에게 설치를 요청한다 |
 
-> 폴더 안(`.tools/`)에 설치된 도구를 터미널에서 직접 쓰려면: `eval "$(./run.sh kubeconfig)"` (PATH 와 KUBECONFIG 를 함께 설정한다. `run.sh` 는 자동으로 사용한다.)
+> 폴더 안(`.tools/`)에 설치된 도구를 터미널에서 직접 쓰려면: `eval "$(./run.sh kubeconfig)"` (PATH·KUBECONFIG·AWS 프로필을 함께 설정한다. `run.sh` 는 자동으로 사용한다.)
 
 ---
 
-## 3단계. AWS 자격 증명 설정 (한 번만)
+## 3단계. AWS 로그인 (자동 — 따로 할 일 없음)
 
-멘토에게 받은 Access Key 또는 SSO로 설정한다. **CloudShell은 이미 로그인되어 있으므로 건너뛴다.**
+**내 AWS 계정**에 관리자 권한으로 콘솔 로그인만 할 수 있으면 된다. Access Key 를 만들거나 `aws configure` 를 할 필요가 없다.
+처음 `./run.sh doctor`(또는 `demo`)를 실행하면 아래 과정이 자동으로 진행된다.
 
-```bash
-eval "$(./run.sh kubeconfig)"   # (AWS CLI 가 2단계에서 폴더 안에 설치됐다면) aws 명령을 바로 쓰도록 PATH 설정
-aws configure                   # Access Key ID / Secret / region: ap-northeast-2 / output: json
-aws sts get-caller-identity     # 내 계정이 맞는지 확인
+```text
+① 로그인       CloudShell → 이미 로그인됨, 그대로 사용
+               내 PC     → 브라우저가 열리고 AWS 콘솔에 로그인 → CLI 가 임시 자격 증명을 받음 (aws login)
+② 작업용 역할   hannctl-identity 스택이 IAM 역할 hannctl-operator-role 을 만듦 (처음 한 번, 약 1분, 비용 0원)
+③ 역할 전환     이후 run.sh 의 모든 작업은 hannctl-operator-role 의 임시 자격 증명으로 실행
 ```
 
-> 🔒 Access Key는 **절대 Git에 올리거나 파일에 저장하지 않는다.** 이 키트도 키를 파일에 저장하지 않는다.
-> 다른 프로필을 쓰려면 `HANNCTL_PROFILE=프로필명 ./run.sh demo`
+| 처음 실행할 때 보이는 것 | 할 일 |
+|---|---|
+| 브라우저가 열리고 AWS 로그인 화면이 나온다 | 내 AWS 계정으로 로그인 → "허용" → 터미널로 돌아오면 자동으로 이어진다 |
+| (서버·SSH 처럼 브라우저가 없는 곳) 주소가 출력되고 코드를 묻는다 | 주소를 PC/휴대폰 브라우저에서 열어 로그인 → 화면의 코드를 터미널에 붙여 넣기 |
+| `root 사용자로 로그인되어 있습니다` + hannctl-admin 로그인 정보 | 아래 "root 로 로그인했다면" 참고 |
+
+자동으로 만들어지는 것 (모두 이름에 **hannctl** 이 붙는다):
+
+| 이름 | 종류 | 역할 |
+|---|---|---|
+| `hannctl-login` | 내 PC 의 AWS CLI 프로필 | 콘솔 로그인으로 받은 임시 자격 증명 (자동 갱신, 최대 12시간) |
+| `hannctl` | 내 PC 의 AWS CLI 프로필 | `hannctl-login` → `hannctl-operator-role` 로 전환하는 설정 (run.sh 가 사용) |
+| `hannctl-operator-role` | IAM 역할 (`hannctl-identity` 스택) | 실제 작업 권한. IAM 은 이름이 `hannctl-` 인 것만 다룰 수 있고, 자기 권한은 스스로 늘릴 수 없다 |
+| `hannctl-admin` | IAM 사용자 (root 로 로그인한 경우에만) | 콘솔 로그인 전용. Access Key 없음. `hannctl-operator-role` 로 전환하는 것만 가능 |
+
+> **root 로 로그인했다면:** root 는 IAM 역할로 전환할 수 없고 일상 작업에 쓰면 위험하다. 그래서 키트가 콘솔 사용자 `hannctl-admin` 을 만들고 로그인 주소·임시 비밀번호를 **한 번만** 보여 준다.
+> 브라우저에서 root 를 로그아웃하고 `hannctl-admin` 으로 다시 로그인하면 이어서 진행된다(첫 로그인 때 새 비밀번호를 정한다). CloudShell 이라면 `hannctl-admin` 으로 콘솔에 다시 로그인한 뒤 CloudShell 을 열고 같은 명령을 다시 실행한다.
+
+> 🔒 이 키트는 Access Key(장기 키)를 만들거나 파일에 저장하지 않는다. 다시 로그인하려면 `./run.sh login`, 이 PC 의 로그인을 지우려면 `./run.sh logout`.
+> 이미 쓰고 있는 AWS CLI 프로필로 로그인을 대신하려면 `HANNCTL_SOURCE_PROFILE=프로필명 ./run.sh demo` (그 프로필에서도 `hannctl-operator-role` 로 전환해서 작업한다).
 
 ---
 
@@ -87,7 +107,7 @@ aws sts get-caller-identity     # 내 계정이 맞는지 확인
 ./run.sh doctor
 ```
 
-도구, 자격 증명, 리전, 권한, VPC 한도를 점검하고 ✔/✘로 보여준다. ✘가 있으면 안내에 따라 해결한다.
+도구, 로그인, 작업용 역할, 리전, VPC 한도를 점검하고 ✔/✘로 보여준다. 도구가 없으면 설치하고, 로그인이 안 되어 있으면 로그인부터 진행한다. ✘가 있으면 안내에 따라 해결한다.
 
 ---
 
@@ -163,6 +183,7 @@ aws sts get-caller-identity     # 내 계정이 맞는지 확인
 > ⚠️ 끄면 **자동으로 지워 주지 않는다.** 끝나면 반드시 `./run.sh down` 을 실행한다. (24시간 방치 시 시나리오 1개당 약 $5~6)
 > ⚠️ 시나리오 스택이 남아 있는 동안에는 `hannctl-finops-guard` 스택이나 `hannctl-cfn-exec-role` 역할을 **콘솔에서 직접 지우지 않는다.** 실행 역할이 없으면 시나리오 스택을 삭제할 수 없게 된다.
 > 모든 실습을 마치고 Guard 까지 정리하려면 `./run.sh down-all` 을 실행한다. 이 명령은 다른 hannctl 시나리오 스택이 남아 있으면 Guard 를 지우지 않는다.
+> 작업용 역할(`hannctl-identity` 스택, 비용 0원)까지 지우려면 `./run.sh down-all --identity`. (hannctl-admin 으로 로그인한 경우에는 root 로 CloudShell 에서 `aws cloudformation delete-stack --stack-name hannctl-identity`)
 
 ---
 
@@ -170,9 +191,10 @@ aws sts get-caller-identity     # 내 계정이 맞는지 확인
 
 | 증상 | 해결 |
 |---|---|
-| `AWS 자격 증명 확인 실패` | `aws configure` 다시 설정, `aws sts get-caller-identity` 확인 |
+| `AWS 로그인이 필요합니다` / 로그인 실패 | `./run.sh login` 으로 다시 로그인 (임시 자격 증명은 최대 12시간) |
+| `신원 스택 배포 실패` | 로그인한 사용자에게 관리자 권한(IAM 역할 생성)이 있어야 한다. 계정 소유자(root)로 로그인하면 키트가 `hannctl-admin` 을 만들어 준다 |
 | 실습 도중 환경이 사라졌다 | 유지 시간이 지나 자동 삭제된 것이다 → `./run.sh demo` 로 다시 만들고, 다음에는 `--hours` 를 넉넉히 준다 |
 | kubectl이 `Unauthorized`/타임아웃 | 내 공인 IP가 바뀌었을 수 있다 → `./run.sh up`(EKS API 허용 IP 갱신) |
-| `VPC 한도` 오류 | 같은 계정에 VPC가 5개다. 다른 실습을 `down` 하거나 멘토에게 문의 |
+| `VPC 한도` 오류 | 같은 계정에 VPC가 5개다. 다른 실습을 `down` 하거나 Service Quotas 에서 VPC 한도 증가 요청 |
 | 스택 배포 실패 | 화면의 `✘` 줄(실패 리소스와 이유)을 확인 → `./run.sh down` 후 다시 `./run.sh demo` |
 | 점수가 88점 미만 | `evidence/latest/REPORT.html`에서 ❌ 항목 확인 → `./run.sh after`로 재시도 |

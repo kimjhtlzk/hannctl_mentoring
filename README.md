@@ -61,17 +61,20 @@ cd s2-saas-tenant-isolation
 **2) 점검 → 실행 → 삭제**
 
 ```bash
-./run.sh doctor      # 없는 도구 자동 설치 + 자격 증명·권한·한도 점검
-./run.sh demo        # 전부 자동 (첫 실행 25~35분)
+./run.sh doctor      # 없는 도구 자동 설치 + AWS 로그인(브라우저) + 작업용 역할 준비 + 한도 점검
+./run.sh demo        # 전부 자동 (인프라 생성 포함 약 20~45분)
 ./run.sh down        # 끝나면 삭제
 ```
 
-자세한 준비 과정(OS별 설치, `aws configure`)은 각 폴더의 **`START_HERE.md`**, 시나리오 설명과 학습 내용은 **`README.md`** 에 있다.
+필요한 것은 **내 AWS 계정에 관리자로 콘솔 로그인할 수 있는 것** 하나뿐이다. Access Key 발급이나 `aws configure` 는 필요 없다.
+처음 실행하면 브라우저 로그인(`aws login`)으로 임시 자격 증명을 받고, 키트가 작업용 IAM 역할 `hannctl-operator-role` 을 만들어 모든 작업을 그 역할로 한다(CloudShell 은 로그인도 생략).
+
+자세한 준비 과정(OS별 설치, 로그인 흐름)은 각 폴더의 **`START_HERE.md`**, 시나리오 설명과 학습 내용은 **`README.md`** 에 있다.
 
 | 지원 환경 | 비고 |
 |---|---|
 | macOS · Ubuntu · CentOS/Rocky · Amazon Linux | bash 와 인터넷만 있으면 된다. python3·AWS CLI·kubectl·helm 등은 **없는 것만 자동 설치**(`tools/install-tools.sh`, 있으면 건너뜀) |
-| **AWS CloudShell** | 설치할 것이 없어 가장 쉽다 |
+| **AWS CloudShell** | 이미 로그인되어 있고 대부분 설치되어 있어 가장 쉽다 |
 | Docker | **필요 없음** — 이미지 빌드는 AWS CodeBuild에서 수행 |
 
 ---
@@ -127,7 +130,13 @@ cd s2-saas-tenant-isolation
 
 이 키트가 AWS에 만드는 **모든 리소스**는 다음 규칙을 따른다(After 테스트가 자동 검사).
 
-1. 이름이 **`hannctl-`** 로 시작한다(Secrets Manager는 `hannctl/…`).
+1. 이름이 **`hannctl-`** 로 시작한다(Secrets Manager는 `hannctl/…`). 자격 증명·역할·권한도 같다.
+   | 신원 | 종류 | 설명 |
+   |---|---|---|
+   | `hannctl-operator-role` | IAM 역할 (`hannctl-identity` 스택) | 키트의 모든 작업을 수행하는 역할. 임시 자격 증명만 사용, IAM 은 `hannctl-*` 만 다룰 수 있고 자기 권한은 못 늘림 |
+   | `hannctl-admin` | IAM 사용자 (root 로 로그인한 경우만) | 콘솔 로그인 전용, Access Key 없음, `hannctl-operator-role` 전환만 가능 |
+   | `hannctl-cfn-exec-role`, `hannctl-janitor-role` | IAM 역할 (`hannctl-finops-guard` 스택) | CloudFormation 실행용 / 자동 정리 Lambda 용 |
+   | `hannctl-login`, `hannctl` | 멘티 PC 의 AWS CLI 프로필 | 콘솔 로그인 임시 자격 증명 / `hannctl-operator-role` 전환 설정 |
 2. 태그 **`Project=hannctl`** 과 `hannctl:scenario`, `hannctl:lifetime-hours`, `hannctl:expires-at`, `hannctl:est-usd-per-hour`를 가진다.
 3. 이 키트는 **이름 `hannctl-*` + 태그 `Project=hannctl`을 모두 만족하는 스택만** 만들고, 고치고, 지운다.
 
@@ -168,9 +177,10 @@ hannctl_mentoring/
 |---|---|
 | 조별 배포 | 시나리오 폴더 링크를 전달하거나 `zip -r s2.zip s2-saas-tenant-isolation -x '*/evidence/*' '*/.kube/*' '*/.tools/*'` |
 | 공통 파일 수정 | `_shared/` 수정 → `_shared/sync.sh` (모든 시나리오에 복사 + RUBRIC.md / START_HERE.md 재생성) |
-| 계정·리전 변경 | `HANNCTL_PROFILE=프로필 HANNCTL_REGION=리전 ./run.sh demo` |
+| 멘티 자격 증명 | **멘토가 주거나 관리할 것이 없다.** 멘티가 자기 AWS 계정으로 로그인하면 hannctl 신원이 자동으로 만들어진다 (START_HERE.md 3단계) |
+| 리전 변경 / 기존 프로필 사용 | `HANNCTL_REGION=리전 ./run.sh demo`, `HANNCTL_SOURCE_PROFILE=프로필 ./run.sh demo` |
 | 유지 시간·상한 조정 | `./run.sh demo --hours 8`, `./run.sh lifetime 9`, `./run.sh cap 15` (0 = 끄기) |
-| 전체 정리 | 각 시나리오 `./run.sh down`, 마지막에 `./run.sh down-all` (공통 안전장치까지) |
+| 전체 정리 | 각 시나리오 `./run.sh down`, 마지막에 `./run.sh down-all` (공통 안전장치까지), `./run.sh down-all --identity` (작업용 역할까지) |
 
 > ⚠️ 이 저장소에는 계정 ID, 키, IP 같은 환경 정보가 들어 있지 않다. 모두 실행 시점에 조회한다.
 > 실행 결과(`evidence/`)와 kubeconfig(`.kube/`)는 `.gitignore`로 제외되어 있다. 직접 올리지 않도록 주의한다.

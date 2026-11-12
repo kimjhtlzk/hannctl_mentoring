@@ -69,7 +69,7 @@ cd s4-eks-audit-hardening
 
 다른 터미널에서 `./run.sh watch`를 켜 두면 권한, 정책, CronJob이 바뀌는 과정을 실시간으로 볼 수 있다.
 
-> 처음 한 번 필요한 것: AWS 자격 증명(`aws configure`). python3·AWS CLI·kubectl·helm 등 필요한 도구는 **없는 것만 자동 설치**된다(`tools/install-tools.sh`, 이미 있으면 건너뜀). 자세한 준비는 [START_HERE.md](START_HERE.md) 참고.
+> 처음 한 번 필요한 것: 내 AWS 계정에 관리자로 콘솔 로그인할 수 있으면 된다. 처음 실행할 때 브라우저 로그인으로 임시 자격 증명을 받고, 작업용 역할 `hannctl-operator-role` 이 자동으로 만들어진다(Access Key·`aws configure` 불필요). python3·AWS CLI·kubectl·helm 등은 **없는 것만 자동 설치**된다. 자세한 준비는 [START_HERE.md](START_HERE.md) 참고.
 > macOS, Ubuntu, CentOS/Rocky, AWS CloudShell에서 동작한다(로컬 Docker 불필요).
 
 ---
@@ -299,8 +299,9 @@ eval "$(./run.sh kubeconfig)"      # 이 시나리오 전용 kubeconfig (내 ~/.
 ### 6-1. 준비 — 내 정보 확인
 
 ```bash
+eval "$(./run.sh kubeconfig)"    # 작업용 역할 hannctl-operator-role 로 작업 (AWS_PROFILE=hannctl, 처음이면 먼저 ./run.sh doctor)
 export AWS_REGION=ap-northeast-2
-MY_ARN=$(aws sts get-caller-identity --query Arn --output text)   # 클러스터 관리자로 등록할 나
+MY_ARN=$(aws sts get-caller-identity --query Arn --output text)   # 클러스터 관리자로 등록할 나 (= hannctl-operator-role)
 MY_IP=$(curl -s https://checkip.amazonaws.com)/32                  # EKS API 에 접속을 허용할 내 IP
 echo "$MY_ARN  $MY_IP"
 ```
@@ -446,6 +447,7 @@ s4-eks-audit-hardening/
 ├── RUBRIC.md / rubric.json   # 평가표 (사람용 / 자동 채점용)
 ├── cfn/
 │   ├── stack.yaml            # AWS 인프라 전부 (VPC, EKS, 노드, 애드온, 감사 로그 토글, 개발자 Role)
+│   ├── hannctl-identity.yaml      # 작업용 역할 hannctl-operator-role (+root 로그인 시 hannctl-admin) — 자동 생성
 │   └── hannctl-finops-guard.yaml  # 공통 안전장치 (실행 역할, 자동 삭제 Lambda, 예산)
 ├── checks/
 │   ├── cluster_checks.py     # 자체 점검 DEMO-01~12 → selfcheck.csv/md/json

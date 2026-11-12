@@ -6,7 +6,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 for d in "$ROOT"/s[0-9]-*/; do
   mkdir -p "$d/lib" "$d/cfn" "$d/tools"
   cp "$ROOT/_shared/lib/common.sh" "$ROOT/_shared/lib/score.py" "$ROOT/_shared/lib/tagcheck.py" "$ROOT/_shared/lib/cost.py" "$d/lib/"
-  cp "$ROOT/_shared/cfn/hannctl-finops-guard.yaml" "$d/cfn/"
+  cp "$ROOT/_shared/cfn/hannctl-finops-guard.yaml" "$ROOT/_shared/cfn/hannctl-identity.yaml" "$d/cfn/"
   cp "$ROOT/_shared/tools/install-tools.sh" "$d/tools/"
   mkdir -p "$d/k8s/policies" && cp "$ROOT/_shared/k8s/kyverno-baseline.yaml" "$d/k8s/policies/"
   [ -f "$d/rubric.json" ] && python3 "$d/lib/score.py" --rubric "$d/rubric.json" --rubric-md "$d/RUBRIC.md" >/dev/null

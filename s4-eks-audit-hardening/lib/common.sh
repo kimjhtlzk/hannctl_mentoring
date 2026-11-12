@@ -2,12 +2,17 @@
 # =============================================================================
 # hannctl 공통 라이브러리 — 모든 시나리오의 run.sh 가 source 한다.
 #  - AWS 에 생성되는 모든 리소스: 이름 hannctl- 접두사 + 태그 Project=hannctl
+#  - 자격 증명: 콘솔 로그인(aws login) 또는 CloudShell → 작업용 역할 hannctl-operator-role 의 임시 자격 증명 (Access Key 없음)
 #  - 시나리오 스택은 hannctl-cfn-exec-role 로 생성 → hannctl-janitor 가 유지 시간(생성 시각 기준) 만료 시 자동 삭제
 #  - macOS 기본 bash 3.2 호환 (연관 배열/mapfile 미사용)
 # =============================================================================
 set -o pipefail
 
-: "${HANNCTL_PROFILE:=default}"          # 사용할 AWS CLI 프로필
+: "${HANNCTL_PROFILE:=hannctl}"          # 작업용 프로필 (hannctl-operator-role 로 자동 전환, 자동 생성)
+: "${HANNCTL_SOURCE_PROFILE:=}"          # (선택) 로그인 대신 쓸 기존 프로필 — 비우면 aws login / CloudShell 사용
+LOGIN_PROFILE="hannctl-login"            # aws login 이 임시 자격 증명을 보관하는 프로필 (자동 생성)
+IDENTITY_STACK="hannctl-identity"        # 작업용 역할(+root 대신 쓸 콘솔 사용자) 스택
+OPERATOR_ROLE="hannctl-operator-role"
 : "${HANNCTL_REGION:=ap-northeast-2}"    # 서울 리전
 : "${HANNCTL_LIFETIME_HOURS:=}"          # 실습 환경 유지 시간(스택 생성 시각 기준, 비우면 시작 시 물어봄 / 기본 6)
 DEFAULT_LIFETIME_HOURS=6
@@ -15,6 +20,8 @@ DEFAULT_LIFETIME_HOURS=6
 : "${HANNCTL_BUDGET_USD:=20}"            # 월 상한(USD, 약 3만원 이내) — 넘으면 janitor 가 전부 삭제, 새 배포 거부
 : "${BEFORE_WAIT_SECONDS:=60}"           # demo: Before 관찰 후 After 로 넘어가기까지 대기(초)
 : "${STEP_PAUSE_SECONDS:=5}"             # demo: 개선 단계 사이 대기(초)
+# 환경 변수 Access Key 는 프로필보다 우선하므로 쓰지 않는다 (장기 키 대신 임시 자격 증명만 사용)
+case "${AWS_EXECUTION_ENV:-}" in CloudShell*) ;; *) unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN ;; esac
 export AWS_PROFILE="$HANNCTL_PROFILE" AWS_REGION="$HANNCTL_REGION" AWS_DEFAULT_REGION="$HANNCTL_REGION" AWS_PAGER=""
 
 # 시나리오 폴더 단독 배포 구조: <시나리오>/lib/common.sh, <시나리오>/cfn/*.yaml
@@ -23,6 +30,7 @@ SCEN_DIR="$(cd "$LIB_DIR/.." && pwd)"
 GUARD_STACK="hannctl-finops-guard"
 : "${HOURLY_USD:=0.25}"                  # 시나리오 시간당 예상 비용(run.sh 에서 지정) → 스택 태그로 기록
 GUARD_TEMPLATE="$SCEN_DIR/cfn/hannctl-finops-guard.yaml"
+IDENTITY_TEMPLATE="$SCEN_DIR/cfn/hannctl-identity.yaml"
 export PATH="$SCEN_DIR/.tools/bin:$PATH"   # tools/install-tools.sh 가 설치한 kubectl/helm
 KYVERNO_CHART_VERSION="3.9.2"            # Kyverno v1.19.2
 
@@ -99,10 +107,15 @@ choose_lifetime() { # 처음 시작할 때 유지 시간을 정한다 (이미 �
 
 iso_after_hours() { python3 -c 'import datetime,sys;print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=float(sys.argv[1]))).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$1"; }
 
-tools_ready() { # python3(3.8+), AWS CLI v2, kubectl, helm, curl 이 모두 있는가
+awscli_ok() { # AWS CLI 2.32 이상 (aws login 지원 버전)
+  local v; v=$(aws --version 2>&1 | sed -n 's#^aws-cli/\([0-9]*\)\.\([0-9]*\)\..*#\1 \2#p')
+  # shellcheck disable=SC2086
+  set -- $v; [ "${1:-0}" -eq 2 ] && [ "${2:-0}" -ge 32 ]
+}
+tools_ready() { # python3(3.8+), AWS CLI 2.32+, kubectl, helm, curl 이 모두 있는가
   command -v curl >/dev/null 2>&1 && command -v kubectl >/dev/null 2>&1 && command -v helm >/dev/null 2>&1 &&
   command -v python3 >/dev/null 2>&1 && python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null &&
-  aws --version 2>&1 | grep -q 'aws-cli/2'
+  awscli_ok
 }
 
 ensure_tools() { # 없는 도구만 자동 설치 (있으면 아무것도 하지 않음)
@@ -115,8 +128,116 @@ ensure_tools() { # 없는 도구만 자동 설치 (있으면 아무것도 하지
 preflight() {
   ensure_tools
   need aws kubectl helm python3 curl
-  aws sts get-caller-identity >/dev/null 2>&1 || die "AWS 자격 증명 확인 실패 (프로필: $HANNCTL_PROFILE)"
-  info "AWS 계정 $(account_id) / 프로필 $HANNCTL_PROFILE / 리전 $HANNCTL_REGION"
+  ensure_identity
+  info "AWS 계정 $(account_id) / 신원 $OPERATOR_ROLE (프로필 $HANNCTL_PROFILE) / 리전 $HANNCTL_REGION"
+}
+
+# ----------------------------------------------------------------------------- 자격 증명 (멘티 환경에서 자동 생성)
+#  1) 로그인 : CloudShell 이면 그대로, 아니면 aws login(브라우저 콘솔 로그인) → 프로필 hannctl-login 에 임시 자격 증명
+#  2) 신원   : hannctl-identity 스택이 IAM Role hannctl-operator-role 을 만든다
+#  3) 전환   : 프로필 hannctl = "로그인 자격 증명으로 hannctl-operator-role 전환" → run.sh 의 모든 작업이 이 역할로 실행
+#  root 로 로그인했다면 역할 전환이 불가능하므로 콘솔 사용자 hannctl-admin 을 만들어 다시 로그인하게 안내한다
+in_cloudshell() { case "${AWS_EXECUTION_ENV:-}" in CloudShell*) return 0 ;; esac; return 1; }
+login_source() { # 로그인 자격 증명이 들어 있는 프로필 (CloudShell 은 빈 값 = 컨테이너 자격 증명)
+  if [ -n "$HANNCTL_SOURCE_PROFILE" ]; then echo "$HANNCTL_SOURCE_PROFILE"; elif in_cloudshell; then echo ""; else echo "$LOGIN_PROFILE"; fi
+}
+boot_aws() { # 역할 전환 "전"의 로그인 자격 증명으로 aws 실행 (신원 스택 배포·삭제용)
+  local src; src=$(login_source)
+  if [ -n "$src" ]; then AWS_PROFILE="$src" aws "$@"; else env -u AWS_PROFILE aws "$@"; fi
+}
+browser_here() { # 이 터미널에서 브라우저를 열 수 있는가 (아니면 aws login --remote: 주소를 다른 기기에서 열고 코드 붙여넣기)
+  [ -n "${SSH_CONNECTION:-}" ] && return 1
+  [ "$(uname -s)" = Darwin ] || [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]
+}
+aws_login() { # 브라우저 콘솔 로그인 → 임시 자격 증명 (Access Key 를 만들거나 저장하지 않음)
+  [ -t 0 ] || die "AWS 로그인이 필요합니다. 터미널에서 ./run.sh login 을 한 번 실행하세요"
+  section "AWS 로그인 — 브라우저에서 내 AWS 계정으로 로그인하면 CLI 가 임시 자격 증명을 받습니다"
+  info "Access Key 를 만들지 않습니다. 자격 증명은 자동 갱신되며 최대 12시간 유지됩니다 (프로필 $LOGIN_PROFILE)"
+  aws configure set region "$HANNCTL_REGION" --profile "$LOGIN_PROFILE"
+  if browser_here; then aws login --profile "$LOGIN_PROFILE" || die "로그인 실패 — 다시 ./run.sh login"
+  else
+    info "이 터미널에서는 브라우저를 열 수 없습니다 → 아래 주소를 PC/휴대폰 브라우저에서 열고, 로그인 후 표시되는 코드를 붙여 넣으세요"
+    aws login --profile "$LOGIN_PROFILE" --remote || die "로그인 실패 — 다시 ./run.sh login"
+  fi
+}
+ensure_login() { # 로그인 자격 증명이 유효한지 확인하고, 없으면 자동으로 로그인
+  boot_aws sts get-caller-identity >/dev/null 2>&1 && return 0
+  in_cloudshell && die "CloudShell 자격 증명을 확인할 수 없습니다 — 브라우저에서 CloudShell 탭을 새로 고침하세요"
+  [ -n "$HANNCTL_SOURCE_PROFILE" ] && die "프로필 $HANNCTL_SOURCE_PROFILE 의 자격 증명이 유효하지 않습니다 (HANNCTL_SOURCE_PROFILE 을 비우면 aws login 사용)"
+  aws_login
+  boot_aws sts get-caller-identity >/dev/null 2>&1 || die "로그인 후에도 자격 증명을 확인할 수 없습니다"
+}
+identity_deploy() { # identity_deploy [Key=Value ...] — 신원 스택 생성/갱신 (로그인 자격 증명으로)
+  local sha; sha=$(python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()[:12])' "$IDENTITY_TEMPLATE")
+  info "작업용 IAM 역할 $OPERATOR_ROLE 준비 중 (스택 $IDENTITY_STACK, 처음 한 번 약 1분)"
+  boot_aws cloudformation deploy --stack-name "$IDENTITY_STACK" --template-file "$IDENTITY_TEMPLATE" \
+    --capabilities CAPABILITY_NAMED_IAM --no-fail-on-empty-changeset ${1:+--parameter-overrides "$@"} \
+    --tags Project=hannctl hannctl:role=identity hannctl:est-usd-per-hour=0 "hannctl:template-sha=$sha" hannctl:managed-by=hannctl-cli \
+    >/dev/null || die "신원 스택 배포 실패 — 로그인한 사용자에게 관리자 권한(IAM 포함)이 필요합니다"
+}
+identity_current() { # 신원 스택이 있고 템플릿이 최신인가
+  local sha cur
+  sha=$(python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()[:12])' "$IDENTITY_TEMPLATE")
+  cur=$(boot_aws cloudformation describe-stacks --stack-name "$IDENTITY_STACK" \
+    --query "Stacks[?StackStatus=='CREATE_COMPLETE' || StackStatus=='UPDATE_COMPLETE'] | [0].Tags[?Key=='hannctl:template-sha'] | [0].Value" --output text 2>/dev/null)
+  [ "$cur" = "$sha" ]
+}
+root_bootstrap() { # root 로 로그인한 경우: 콘솔 사용자 hannctl-admin 을 만들고 다시 로그인하게 한다
+  local acct=$1 pw
+  warn "root 사용자로 로그인되어 있습니다 — root 는 IAM 역할로 전환할 수 없고, 일상 작업에 쓰면 위험합니다"
+  info "콘솔 로그인 전용 IAM 사용자 hannctl-admin 을 자동으로 만듭니다 (Access Key 없음, 할 수 있는 일은 $OPERATOR_ROLE 전환뿐)"
+  pw=$(python3 -c 'import secrets,string as s;a=s.ascii_letters+s.digits;print(secrets.choice(s.ascii_uppercase)+secrets.choice(s.digits)+"".join(secrets.choice(a) for _ in range(14))+"#a")')
+  identity_deploy CreateConsoleUser=true "ConsoleUserPassword=$pw"
+  printf '\n%s┌─ hannctl-admin 로그인 정보 (지금 한 번만 표시) ─────────────────────────┐%s\n' "$C_BOLD$C_Y" "$C_0"
+  printf '   로그인 주소 : https://%s.signin.aws.amazon.com/console\n   사용자 이름 : hannctl-admin\n   임시 비밀번호: %s  (첫 로그인 때 새 비밀번호로 변경)\n' "$acct" "$pw"
+  printf '%s└──────────────────────────────────────────────────────────────────────┘%s\n' "$C_BOLD$C_Y" "$C_0"
+  in_cloudshell && die "콘솔 오른쪽 위에서 로그아웃 → 위 주소로 hannctl-admin 로그인 → CloudShell 을 다시 열고 같은 명령을 실행하세요"
+  printf '브라우저에서 root 를 로그아웃한 뒤 Enter 를 누르세요 (다음 로그인은 hannctl-admin 으로) '; read -r _
+  aws logout --profile "$LOGIN_PROFILE" >/dev/null 2>&1 || true
+  aws_login
+  case "$(boot_aws sts get-caller-identity --query Arn --output text 2>/dev/null)" in
+    *:root|'') die "아직 root 로 로그인되어 있습니다 — 브라우저에서 로그아웃 후 ./run.sh login" ;;
+  esac
+}
+ensure_identity() { # 로그인 확인 → 작업용 역할 준비 → 프로필 hannctl 로 전환 (프로세스당 한 번)
+  [ -n "${IDENTITY_READY:-}" ] && return 0
+  ensure_login
+  local arn acct src i
+  arn=$(boot_aws sts get-caller-identity --query Arn --output text); acct=$(echo "$arn" | cut -d: -f5)
+  case "$arn" in *:root) root_bootstrap "$acct" ;; esac
+  identity_current || identity_deploy
+  # 작업용 프로필 hannctl: 로그인 자격 증명으로 hannctl-operator-role 전환 (CLI 가 만료 전에 자동 갱신)
+  src=$(login_source)
+  aws configure set role_arn "arn:aws:iam::$acct:role/$OPERATOR_ROLE" --profile "$HANNCTL_PROFILE"
+  if [ -n "$src" ]; then aws configure set source_profile "$src" --profile "$HANNCTL_PROFILE"
+  else aws configure set credential_source EcsContainer --profile "$HANNCTL_PROFILE"; fi
+  aws configure set role_session_name hannctl-cli --profile "$HANNCTL_PROFILE"
+  aws configure set region "$HANNCTL_REGION" --profile "$HANNCTL_PROFILE"
+  export AWS_PROFILE="$HANNCTL_PROFILE"
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do   # 새 역할은 전파에 몇 초 걸린다
+    case "$(aws sts get-caller-identity --query Arn --output text 2>/dev/null)" in
+      *":assumed-role/$OPERATOR_ROLE/"*) IDENTITY_READY=1; return 0 ;;
+    esac
+    sleep 5
+  done
+  die "$OPERATOR_ROLE 로 전환하지 못했습니다 — ./run.sh doctor 로 확인"
+}
+cmd_login() { # 수동 (재)로그인
+  if in_cloudshell; then ok "CloudShell 은 이미 로그인되어 있습니다"; else aws_login; fi
+  ensure_identity
+  ok "준비 완료: $(aws sts get-caller-identity --query Arn --output text)"
+}
+cmd_logout() { # 이 PC 의 로그인 자격 증명 삭제 (AWS 리소스는 그대로)
+  in_cloudshell && { info "CloudShell 은 콘솔 로그아웃으로 끝납니다"; return 0; }
+  aws logout --profile "$LOGIN_PROFILE" >/dev/null 2>&1 && ok "로그아웃 완료 (프로필 $LOGIN_PROFILE 의 임시 자격 증명 삭제)" || info "로그인된 세션이 없습니다"
+}
+cmd_identity_delete() { # 신원 스택 삭제 (역할·콘솔 사용자) — 로그인 자격 증명으로 실행
+  ensure_login
+  local arn; arn=$(boot_aws sts get-caller-identity --query Arn --output text)
+  case "$arn" in *":user/hannctl-admin") die "hannctl-admin 은 자기 자신을 지울 수 없습니다 → root 로 로그인한 CloudShell 에서: aws cloudformation delete-stack --stack-name $IDENTITY_STACK" ;; esac
+  info "신원 스택 삭제: $IDENTITY_STACK ($OPERATOR_ROLE, hannctl-admin)"
+  boot_aws cloudformation delete-stack --stack-name "$IDENTITY_STACK" &&
+    boot_aws cloudformation wait stack-delete-complete --stack-name "$IDENTITY_STACK" && ok "신원 스택 삭제 완료"
 }
 
 # ----------------------------------------------------------------------------- FinOps Guard
@@ -133,7 +254,7 @@ ensure_guard() {
       # 비용 할당 태그 활성화(Budgets 태그 필터용, best-effort)
       aws ce update-cost-allocation-tags-status --cost-allocation-tags-status TagKey=Project,Status=Active >/dev/null 2>&1 || true
       ok "FinOps Guard 준비 완료 (janitor 10분 주기, 예산 \$$HANNCTL_BUDGET_USD/월)" ;;
-    *) die "guard 스택 상태 이상: $st — ./hannctl.sh guard-status 로 확인" ;;
+    *) die "guard 스택 상태 이상: $st — CloudFormation 콘솔에서 $GUARD_STACK 이벤트 확인" ;;
   esac
   EXEC_ROLE_ARN=$(stack_output "$GUARD_STACK" CfnExecRoleArn)
 }
@@ -519,7 +640,8 @@ usage() {
 ${C_BOLD}$SCENARIO_TITLE${C_0}
 사용법: ./run.sh <명령> [옵션]
 
-  doctor             처음 실행 전 환경 점검 (도구·자격 증명·권한·한도)
+  doctor             처음 실행 전 환경 점검 (도구·로그인·작업용 역할·한도) — 필요하면 자동 설치/로그인
+  login | logout     AWS 콘솔 로그인으로 임시 자격 증명 받기 / 이 PC 의 로그인 지우기 (보통은 자동)
   up                 AWS 인프라(CloudFormation) + 클러스터 기본 구성
   demo [--before-wait N] [--step-pause N]
                      Before 적용 → 테스트 → N초 후 자동으로 개선 단계별 적용 → After 테스트 → 채점/보고서
@@ -535,10 +657,11 @@ ${C_BOLD}$SCENARIO_TITLE${C_0}
   lifetime <HOURS>   유지 시간 변경 — "생성 시각부터 HOURS 시간" (예: 6시간 중 4시간 지난 뒤 9 → 남은 5시간, 0 = 무제한)
   down               이 시나리오의 모든 AWS 리소스 삭제(스택 + 내용물) 및 잔여 확인
   down-all           down + 공통 FinOps Guard(janitor/예산)까지 삭제(다른 hannctl 스택이 없을 때)
+  down-all --identity  위 + 작업용 역할(hannctl-identity 스택)까지 삭제
 
 옵션/환경 변수: --hours N 또는 HANNCTL_LIFETIME_HOURS(처음 유지 시간, 기본 6) BEFORE_WAIT_SECONDS(기본 60)
           STEP_PAUSE_SECONDS(기본 5) HANNCTL_BUDGET_USD(월 상한, 기본 20)
-          HANNCTL_PROFILE(기본 default) HANNCTL_REGION(기본 ap-northeast-2)
+          HANNCTL_REGION(기본 ap-northeast-2) HANNCTL_SOURCE_PROFILE(로그인 대신 쓸 기존 프로필, 선택)
 EOF
 }
 
@@ -657,13 +780,14 @@ cmd_down() {
 cmd_down_all() { # 이 시나리오 + (다른 hannctl 시나리오 스택이 없을 때만) FinOps Guard 까지 삭제
   cmd_down
   local others; others=$(aws cloudformation describe-stacks \
-    --query "Stacks[?starts_with(StackName,'hannctl-') && StackName!='$GUARD_STACK' && StackStatus!='DELETE_COMPLETE'].StackName" --output text)
+    --query "Stacks[?starts_with(StackName,'hannctl-') && StackName!='$GUARD_STACK' && StackName!='$IDENTITY_STACK' && StackStatus!='DELETE_COMPLETE'].StackName" --output text)
   if [ -n "$others" ]; then
     warn "다른 hannctl 시나리오 스택이 아직 있어 FinOps Guard 는 유지합니다: $others"
   else
     destroy_stack "$GUARD_STACK"
     aws budgets delete-budget --account-id "$(account_id)" --budget-name hannctl-monthly-budget >/dev/null 2>&1 || true
     ok "hannctl 리소스 전체 정리 완료"
+    [ "${1:-}" = --identity ] || info "작업용 신원($IDENTITY_STACK: $OPERATOR_ROLE, 비용 0원)은 다음 실습을 위해 남깁니다. 지우려면: ./run.sh down-all --identity"
   fi
 }
 
@@ -675,16 +799,21 @@ cmd_doctor() { # 처음 실행 전 환경 점검 — 무엇이 부족한지 ✔/
   chk "bash / OS: $(uname -s) $(uname -m)" "true" ""
   chk "python3 ($(python3 --version 2>&1))" "python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)'" "./tools/install-tools.sh 실행 (START_HERE.md 2단계)"
   chk "curl" "command -v curl" "curl 설치"
-  chk "AWS CLI v2 ($(aws --version 2>&1 | cut -d' ' -f1))" "aws --version 2>&1 | grep -q 'aws-cli/2'" "./tools/install-tools.sh 실행 (START_HERE.md 2단계)"
+  chk "AWS CLI 2.32+ ($(aws --version 2>&1 | cut -d' ' -f1))" "awscli_ok" "./tools/install-tools.sh 실행 (START_HERE.md 2단계)"
   chk "kubectl ($(kubectl version --client 2>/dev/null | head -1))" "command -v kubectl" "./tools/install-tools.sh 실행"
   chk "helm ($(helm version --short 2>/dev/null))" "command -v helm" "./tools/install-tools.sh 실행"
-  chk "AWS 자격 증명 (프로필 $HANNCTL_PROFILE)" "aws sts get-caller-identity" "aws configure 실행 (START_HERE.md 3단계)"
-  if ! aws sts get-caller-identity >/dev/null 2>&1; then   # 자격 증명이 없으면 나머지 AWS 점검은 의미가 없다
-    info "AWS 권한·한도 점검은 자격 증명을 설정한 뒤 다시 ./run.sh doctor 로 확인합니다"
+  ( ensure_identity ) || true                               # 로그인이 안 되어 있으면 여기서 자동 로그인 + 작업용 역할 준비
+  chk "로그인 ($(in_cloudshell && echo CloudShell || { [ -n "$HANNCTL_SOURCE_PROFILE" ] && echo "기존 프로필 $HANNCTL_SOURCE_PROFILE" || echo "aws login → 프로필 $LOGIN_PROFILE"; }))" \
+      "boot_aws sts get-caller-identity" "./run.sh login (START_HERE.md 3단계)"
+  if ! boot_aws sts get-caller-identity >/dev/null 2>&1; then   # 로그인이 없으면 나머지 AWS 점검은 의미가 없다
+    info "AWS 권한·한도 점검은 로그인한 뒤 다시 ./run.sh doctor 로 확인합니다"
     err "$bad 개 항목을 해결한 뒤 다시 ./run.sh doctor"; return 1
   fi
+  export AWS_PROFILE="$HANNCTL_PROFILE"
+  chk "작업용 신원 $OPERATOR_ROLE (임시 자격 증명, 프로필 $HANNCTL_PROFILE)" \
+      "aws sts get-caller-identity --query Arn --output text | grep -q ':assumed-role/$OPERATOR_ROLE/'" "로그인한 사용자에게 관리자 권한이 필요 (IAM 역할 생성)"
   chk "리전 $HANNCTL_REGION 에서 EKS 사용 가능" "aws eks list-clusters" "권한 또는 리전 확인"
-  chk "CloudFormation/IAM 권한" "aws cloudformation list-stacks --max-items 1 && aws iam list-roles --max-items 1" "관리자급 권한 필요 — 멘토에게 문의"
+  chk "CloudFormation/IAM 권한" "aws cloudformation list-stacks --max-items 1 && aws iam list-roles --max-items 1" "hannctl-identity 스택(역할 권한) 확인"
   local vpcs eips; vpcs=$(aws ec2 describe-vpcs --query 'length(Vpcs)' --output text 2>/dev/null || echo 9)
   eips=$(aws ec2 describe-addresses --query 'length(Addresses)' --output text 2>/dev/null || echo 9)
   if [ "$(stack_status "$STACK")" != NONE ]; then ok "VPC: 이 시나리오 스택이 이미 있음 (현재 ${vpcs}/5)"
@@ -711,10 +840,12 @@ dispatch() {
     cost) cmd_cost ;;
     cap) cmd_cap "$@" ;;
     doctor) cmd_doctor ;;
-    kubeconfig) echo "export KUBECONFIG=$SCEN_DIR/.kube/config; export PATH=$SCEN_DIR/.tools/bin:\$PATH" ;;
+    kubeconfig) echo "export KUBECONFIG=$SCEN_DIR/.kube/config; export PATH=$SCEN_DIR/.tools/bin:\$PATH; export AWS_PROFILE=$HANNCTL_PROFILE AWS_REGION=$HANNCTL_REGION" ;;
+    login) cmd_login ;;
+    logout) cmd_logout ;;
     lifetime|extend) preflight; set_lifetime "$STACK" "${1:-}" ;;
     down) cmd_down ;;
-    down-all) cmd_down_all ;;
+    down-all) cmd_down_all "${1:-}"; [ "${1:-}" = --identity ] && cmd_identity_delete ;;
     *) usage ;;
   esac
 }

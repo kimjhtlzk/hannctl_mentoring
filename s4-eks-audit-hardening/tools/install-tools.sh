@@ -3,7 +3,7 @@
 # 실행에 필요한 도구를 확인하고 "없는 것만" 설치한다. 이미 있으면 건너뛴다.
 #   기본 도구 : curl, tar, gzip, unzip  → OS 패키지 관리자 (apt / dnf / yum / zypper / apk / brew)
 #   python3   : 패키지 관리자 → 안 되면 이 폴더의 .tools/python 에 독립 실행형 설치 (sudo 불필요)
-#   AWS CLI v2, kubectl, helm : 이 폴더의 .tools/ 에 설치 (sudo 불필요, 시스템 경로를 건드리지 않음)
+#   AWS CLI v2(2.32+, aws login 지원), kubectl, helm : 이 폴더의 .tools/ 에 설치 (sudo 불필요, 시스템 경로를 건드리지 않음)
 # 지원: macOS(Apple Silicon/Intel), Ubuntu/Debian, CentOS/Rocky/RHEL/Amazon Linux, openSUSE, AWS CloudShell
 # =============================================================================
 set -uo pipefail
@@ -70,10 +70,12 @@ else
   py_ok && line python3 "✔ 설치됨 ($(python3 --version 2>&1))" || { line python3 "✘ 설치 실패 — START_HERE.md 2단계 참고"; exit 1; }
 fi
 
-# ---------------------------------------------------------------- 3) AWS CLI v2
-if have aws && aws --version 2>&1 | grep -q 'aws-cli/2'; then
+# ---------------------------------------------------------------- 3) AWS CLI v2 (2.32 이상: 브라우저 로그인 aws login 지원)
+awscli_ok() { local v; v=$(aws --version 2>&1 | sed -n 's#^aws-cli/\([0-9]*\)\.\([0-9]*\)\..*#\1 \2#p'); set -- $v; [ "${1:-0}" -eq 2 ] && [ "${2:-0}" -ge 32 ]; }
+if have aws && awscli_ok; then
   line "AWS CLI" "✔ 있음 ($(aws --version 2>&1 | cut -d' ' -f1))"
 else
+  have aws && line "AWS CLI" "… $(aws --version 2>&1 | cut -d' ' -f1) 는 오래되어 최신 버전을 폴더 안에 설치 (기존 것은 그대로)"
   line "AWS CLI" "… v2 설치 중 (.tools/aws-cli)"
   if [ "$OS" = linux ]; then
     A=$([ "$ARCH" = amd64 ] && echo x86_64 || echo aarch64)
@@ -95,7 +97,7 @@ EOF
       ln -sf "$DIR/aws-cli/aws" "$BIN/aws"
   fi
   hash -r
-  aws --version 2>&1 | grep -q 'aws-cli/2' && line "AWS CLI" "✔ 설치됨 ($(aws --version 2>&1 | cut -d' ' -f1))" || { line "AWS CLI" "✘ 설치 실패"; exit 1; }
+  awscli_ok && line "AWS CLI" "✔ 설치됨 ($(aws --version 2>&1 | cut -d' ' -f1))" || { line "AWS CLI" "✘ 설치 실패"; exit 1; }
 fi
 
 # ---------------------------------------------------------------- 4) kubectl

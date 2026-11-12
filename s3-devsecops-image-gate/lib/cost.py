@@ -11,6 +11,7 @@ import subprocess
 import sys
 
 GUARD = "hannctl-finops-guard"
+SHARED = (GUARD, "hannctl-identity")   # 공통 스택(비용 계산 제외)
 DEFAULT_RATE = 0.25  # 태그가 없을 때 보수적 단가(USD/h)
 
 
@@ -29,7 +30,7 @@ def estimate():
     rows, total = [], 0.0
     for s in aws("cloudformation", "list-stacks").get("StackSummaries", []):
         name = s["StackName"]
-        if not name.startswith("hannctl-") or name == GUARD:
+        if not name.startswith("hannctl-") or name in SHARED:
             continue
         created = ts(s["CreationTime"])
         deleted = ts(s["DeletionTime"]) if s.get("DeletionTime") else None
