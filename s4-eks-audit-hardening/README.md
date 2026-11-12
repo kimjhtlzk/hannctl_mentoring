@@ -441,7 +441,7 @@ aws eks describe-cluster --name hannctl-s4-audit --query cluster.logging   # →
 
 ```text
 s4-eks-audit-hardening/
-├── run.sh                    # 유일한 진입점 (demo / upgrade / up / before / after / test / score / status / watch / extend / down)
+├── run.sh                    # 유일한 진입점 (demo / upgrade / up / before / after / test / score / status / watch / lifetime / down)
 ├── README.md                 # 이 문서 (학습 가이드)
 ├── RUBRIC.md / rubric.json   # 평가표 (사람용 / 자동 채점용)
 ├── cfn/

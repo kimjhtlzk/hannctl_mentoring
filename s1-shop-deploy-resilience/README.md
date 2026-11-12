@@ -55,7 +55,7 @@ cd s1-shop-deploy-resilience
 ./run.sh demo                      # 전부 자동: 인프라 → Before 재현 → 60초 후 자동 개선 5단계 → After 검증 → 채점
 ./run.sh demo --before-wait 180    # Before 상태를 3분 동안 관찰한 뒤 넘어가기
 ./run.sh grafana                   # (다른 터미널) Grafana 그래프로 Pod 수·CPU 변화 보기 → http://localhost:3000
-./run.sh down                      # 끝나면 전부 삭제 (잊어도 3시간 뒤 자동 삭제)
+./run.sh down                      # 끝나면 전부 삭제 (잊어도 정한 유지 시간이 지나면 자동 삭제)
 ```
 
 `demo`가 끝나면 `evidence/latest/REPORT.html`이 열린다. 점수, Before→After 비교, 전환 타임라인을 한 화면에서 볼 수 있다.
@@ -423,7 +423,7 @@ kubectl apply -n shop --dry-run=server -f k8s/attack/privileged-pod.yaml
 
 ```text
 s1-shop-deploy-resilience/
-├── run.sh                    # 유일한 진입점 (demo / up / before / after / test / score / status / watch / grafana / extend / down)
+├── run.sh                    # 유일한 진입점 (demo / up / before / after / test / score / status / watch / grafana / lifetime / down)
 ├── README.md                 # 이 문서 (학습 가이드)
 ├── RUBRIC.md / rubric.json   # 평가표 (사람용 / 자동 채점기용)
 ├── cfn/

@@ -431,7 +431,7 @@ kubectl --context hannctl-s5-developer -n office auth can-i get secrets
 
 ```text
 s5-secret-iam-least-privilege/
-├── run.sh                    # 유일한 진입점 (demo / up / before / after / test / score / status / watch / extend / down)
+├── run.sh                    # 유일한 진입점 (demo / up / before / after / test / score / status / watch / lifetime / down)
 ├── README.md                 # 이 문서 (학습 가이드)
 ├── RUBRIC.md / rubric.json   # 평가표 (사람용 / 자동 채점용)
 ├── cfn/

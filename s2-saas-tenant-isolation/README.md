@@ -405,7 +405,7 @@ kubectl apply -n tenant-a --dry-run=server -f k8s/attack/privileged-pod.yaml
 
 ```text
 s2-saas-tenant-isolation/
-├── run.sh                    # 유일한 진입점 (doctor / demo / up / before / after / test / score / status / watch / cost / extend / down)
+├── run.sh                    # 유일한 진입점 (doctor / demo / up / before / after / test / score / status / watch / cost / lifetime / down)
 ├── README.md                 # 이 문서 (학습 가이드)
 ├── RUBRIC.md / rubric.json   # 평가표 (사람이 읽는 표 / 자동 채점기가 읽는 표)
 ├── cfn/
