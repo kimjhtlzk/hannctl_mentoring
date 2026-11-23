@@ -30,7 +30,6 @@ cd s2-saas-tenant-isolation
 ```
 
 > git 이 없다면 방법 B 를 쓰거나 먼저 설치한다: macOS `xcode-select --install` · Ubuntu `sudo apt install -y git` · CentOS/Rocky/Amazon Linux `sudo yum install -y git`
-> 멘토에게 zip 파일로 받았다면 압축을 풀고 폴더 안으로 들어가면 된다.
 
 이후의 명령은 모두 **이 시나리오 폴더(`s2-saas-tenant-isolation`) 안에서** 실행한다. 터미널을 새로 열었다면 먼저 이 폴더로 `cd` 한다.
 
@@ -69,7 +68,7 @@ cd s2-saas-tenant-isolation
 |---|---|
 | **AWS CloudShell** (가장 쉬움) | AWS 콘솔 우측 상단 `>_` 아이콘 → 1단계부터. 대부분 이미 있어서 kubectl·helm 정도만 설치된다 |
 | **macOS** | 관리자 암호 없이 설치된다 (Homebrew 가 있으면 python 은 brew 로 설치) |
-| **Ubuntu / Debian · CentOS / Rocky / Amazon Linux** | curl·unzip·python3 이 없으면 `sudo` 암호를 물을 수 있다. sudo 를 못 쓰면 python3 은 폴더 안에 설치되고, curl 이 없으면 관리자에게 설치를 요청한다 |
+| **Ubuntu / Debian · CentOS / Rocky / Amazon Linux** | curl·unzip·python3 이 없으면 `sudo` 암호를 물을 수 있다. sudo 를 못 쓰면 python3 은 폴더 안에 설치되고, curl 이 없으면 먼저 설치한다 (`sudo apt install -y curl` 등) |
 | **Windows** | PowerShell·명령 프롬프트에서는 실행되지 않는다. **AWS CloudShell** 을 쓰거나, 리눅스 환경(WSL2 의 Ubuntu 등)의 터미널에서 Ubuntu 와 같은 방법으로 진행한다 |
 
 > 폴더 안(`.tools/`)에 설치된 도구를 터미널에서 직접 쓰려면: `eval "$(./run.sh kubeconfig)"` (PATH·KUBECONFIG·AWS 프로필을 함께 설정한다. `run.sh` 는 자동으로 사용한다.)

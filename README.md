@@ -155,7 +155,7 @@ hannctl_mentoring/
 ├── s3-devsecops-image-gate/         │  각 폴더가 독립적으로 실행된다
 ├── s4-eks-audit-hardening/          │  (GUIDE · README · START_HERE · run.sh · cfn · k8s · lib · tools)
 ├── s5-secret-iam-least-privilege/   ┘
-└── _shared/                         # [관리자용] 공통 파일 원본 → sync.sh 로 각 시나리오에 복사
+└── _shared/                         # 공통 파일 원본 (각 시나리오 폴더에 이미 들어 있다)
 ```
 
 각 시나리오 폴더 안의 구성은 같다.
@@ -174,13 +174,10 @@ hannctl_mentoring/
 
 ---
 
-## 🧑‍🏫 멘토·관리자용
+## 🔧 추가 설정과 정리
 
 | 작업 | 방법 |
 |---|---|
-| 조별 배포 | 시나리오 폴더 링크를 전달하거나 `zip -r s2.zip s2-saas-tenant-isolation -x '*/evidence/*' '*/.kube/*' '*/.tools/*'` |
-| 공통 파일 수정 | `_shared/` 수정 → `_shared/sync.sh` (모든 시나리오에 복사 + RUBRIC.md / START_HERE.md 재생성) |
-| 멘티 자격 증명 | **멘토가 주거나 관리할 것이 없다.** 멘티가 자기 AWS 계정으로 로그인하면 hannctl 신원이 자동으로 만들어진다 (START_HERE.md 3단계) |
 | 리전 변경 / 기존 프로필 사용 | `HANNCTL_REGION=리전 ./run.sh demo`, `HANNCTL_SOURCE_PROFILE=프로필 ./run.sh demo` |
 | 유지 시간·상한 조정 | `./run.sh demo --hours 8`, `./run.sh lifetime 9`, `./run.sh cap 15` (0 = 끄기) |
 | 전체 정리 | 각 시나리오 `./run.sh down`, 마지막에 `./run.sh down-all` (공통 안전장치까지), `./run.sh down-all --identity` (작업용 역할까지) |
