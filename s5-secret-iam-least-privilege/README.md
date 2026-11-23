@@ -1,6 +1,7 @@
-# 시나리오 5 · 내부 API 인증정보 보호와 최소 권한 (OfficeLink)
+# 시나리오 5 · 내부 API 인증정보 보호와 최소 권한 (OfficeLink) — 해설서
 
-> 처음이라면 [START_HERE.md](START_HERE.md) 부터.
+> ▶ **실습은 [GUIDE.md](GUIDE.md) 하나만 보고 따라간다** (내려받기·준비도 GUIDE.md 0단계에 있다).
+> 이 문서는 시나리오의 배경·원리·직접 구성 방법·발표 포인트를 담은 해설서다.
 
 > **한 줄 요약**
 > 사내 업무 API가 **AWS 키를 코드·설정 파일에 넣지 않고**, Pod마다 **자기에게 필요한 Secret 하나만** 읽게 만든다.
@@ -11,10 +12,11 @@
 |---|---|
 | 난이도 | ★★★☆☆ (3/5) — IAM과 Kubernetes 권한의 경계를 이해하는 것이 핵심, 코드 작성은 거의 없음 |
 | 핵심 기술 | AWS **Secrets Manager**, **EKS Pod Identity**, IAM 최소 권한, Kubernetes **RBAC** + EKS Access Entry, **PSA/Kyverno**, **NetworkPolicy**, **CloudTrail** vs **EKS audit** |
-| 소요 시간 | 처음 `demo` 약 20분(인프라 생성 실측 13분 포함), 이후 재실행 약 3~5분 (CloudTrail 기록이 늦으면 최대 10분 추가 대기) |
-| 예상 비용 | 약 **$0.21/시간(≈300원)** (EKS $0.10 + 노드 1대 + NAT 1개 + Secret 2개). 처음 정한 유지 시간(기본 6시간)이 지나면 자동 삭제 |
+| 소요 시간 | 처음 `demo` 약 17~19분(인프라 생성 12~14분 포함), 인프라가 있을 때 재실행 약 3~4분 (CloudTrail 기록이 늦으면 최대 10분 추가 대기), 삭제 약 8분 |
+| 예상 비용 | 약 **$0.21/시간(≈290원)** (EKS $0.10 + 노드 1대 + NAT 1개 + Secret 2개). 처음 정한 유지 시간(기본 6시간)이 지나면 자동 삭제 (자세히: [9장](#9-비용-안전장치-삭제-finops)) |
 | 과정 요구사항 연결 | 접근·네트워크 통제(RBAC 최소 권한, NetworkPolicy, **시크릿 외부 관리**), 정책 기반 통제(PSS/Kyverno), 감사 로그 |
 
+---
 
 ## 🎯 이 시나리오의 초점 (먼저 읽기)
 
@@ -61,9 +63,11 @@ cd s5-secret-iam-least-privilege
 ./run.sh demo --hours 3            # 처음 시작할 때 유지 시간 지정 (기본 6, 0 = 무제한)
 ```
 
-- 끝나면 `evidence/latest/REPORT.html`이 열린다(점수, Before→After 비교, 전환 타임라인).
-- 진행 중 **다른 터미널에서 `./run.sh watch`** 를 켜 두면 Pod가 쓰는 ServiceAccount, 정적 키 개수, 네트워크 정책이 바뀌는 모습이 실시간으로 보인다.
-- CloudTrail 기록 대기 시간은 `CLOUDTRAIL_WAIT_SECONDS=300 ./run.sh demo`처럼 줄일 수 있다(줄이면 감사 항목이 미확인으로 남을 수 있다).
+- 끝나면 `evidence/latest/REPORT.html`이 열린다(점수, Before→After 비교, 전환 타임라인). 열리지 않으면 [START_HERE.md](START_HERE.md) 5단계를 참고한다.
+- 진행 중 **다른 터미널에서 `./run.sh watch`**(새 터미널에서도 이 폴더로 `cd` 한 뒤)를 켜 두면 Pod가 쓰는 ServiceAccount, 정적 키 개수, 네트워크 정책이 바뀌는 모습이 실시간으로 보인다.
+  demo 를 시작하자마자 켜도 된다. EKS 클러스터가 준비될 때까지(시작 후 약 10~15분) `⏳ EKS 클러스터 hannctl-s5-office 준비 대기 중` 화면을 보여 주다가, 준비되면 자동으로 클러스터 화면으로 바뀐다. 끝낼 때는 Ctrl+C.
+- After 테스트의 CloudTrail 확인은 기록이 나타날 때까지 30초 간격으로 최대 10분 기다린다(보통 1~5분). 대기 시간은 `CLOUDTRAIL_WAIT_SECONDS=300 ./run.sh demo`처럼 줄일 수 있다.
+  그래도 `감사: Secret 접근 → CloudTrail` 이 `NOT_FOUND` 로 남으면 몇 분 뒤 `./run.sh test after && ./run.sh score` 로 다시 확인한다(환경은 그대로 두고 테스트와 채점만 다시 한다).
 
 > 처음 한 번 필요한 것: 내 AWS 계정에 관리자로 콘솔 로그인할 수 있으면 된다. 처음 실행할 때 브라우저 로그인으로 임시 자격 증명을 받고, 작업용 역할 `hannctl-operator-role` 이 자동으로 만들어진다(Access Key·`aws configure` 불필요). python3·AWS CLI·kubectl·helm 등은 **없는 것만 자동 설치**된다. 자세한 준비는 [START_HERE.md](START_HERE.md) 참고.
 > macOS, Ubuntu, CentOS/Rocky, AWS CloudShell에서 동작한다.
@@ -125,8 +129,7 @@ flowchart TB
       subgraph VPC["VPC 10.15.0.0/16"]
         NAT["NAT Gateway (Public)"]
         subgraph PRI["Private Subnet ×2"]
-          N1["노드 t4g.medium<br/>IMDSv2 · hop limit 1"]
-          N2["노드 t4g.medium<br/>IMDSv2 · hop limit 1"]
+          N1["노드 t4g.medium ×1 (최대 2)<br/>IMDSv2 · hop limit 1"]
         end
       end
       CP["EKS hannctl-s5-office<br/>+ Pod Identity Agent 애드온"]
@@ -143,7 +146,7 @@ flowchart TB
   end
   RUN --> EXEC --> STACK
   RUN -- kubectl/helm --> CP
-  CP --- N1 & N2
+  CP --- N1
   PIA --> R1 & R2
   R1 -- GetSecretValue --> SM1
   LU -. "Before: 둘 다 읽기" .-> SM1 & SM2
@@ -218,7 +221,7 @@ sequenceDiagram
   participant CF as CloudFormation
   participant K as EKS
   U->>R: ./run.sh demo
-  R->>CF: guard(최초 1회) + hannctl-s5-office 배포 (~15분)
+  R->>CF: guard(최초 1회) + hannctl-s5-office 배포 (약 12~14분)
   R->>K: Kyverno 설치, office Namespace·SA·포털 배포
   R->>K: BEFORE: 공용 정적 키 발급 → K8s Secret → api·intruder 가 envFrom 으로 사용, 개발자/운영자 cluster-admin
   R->>K: BEFORE 테스트 (위험이 노란색으로 "재현")
@@ -286,7 +289,7 @@ eval "$(./run.sh kubeconfig)"          # 이 시나리오 전용 kubeconfig (내
 | 10 | IAM 정책(최소 권한) 확인 | `aws iam get-role-policy --role-name hannctl-s5-office-app-reader --policy-name hannctl-s5-read-allowed-secret-only` |
 | 11 | 개발자로 접속 | `kubectl --context hannctl-s5-developer -n office get pods` (성공) / `get secrets` (Forbidden) |
 | 12 | 네트워크 정책 | `kubectl -n office get networkpolicy` |
-| 13 | CloudTrail(누가 Secret 을 읽었나) | `aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=GetSecretValue --max-results 10` |
+| 13 | CloudTrail(누가 Secret 을 읽었나) | `aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=GetSecretValue --max-results 20 --query 'Events[].[EventTime,Username]' --output table`<br>→ Before 는 `hannctl-s5-legacy-app`(공용 키), After 는 Pod 별 세션 `eks-hannctl-s5-office-api-…`(app-reader 역할)·`eks-hannctl-s5-intruder-…`(no-secret 역할). 기록은 보통 1~5분 늦게 나타난다 |
 | 14 | EKS audit(누가 kubectl 로 거부당했나) | CloudWatch → `/aws/eks/hannctl-s5-office/cluster` → `kube-apiserver-audit-*` |
 
 ---
@@ -295,31 +298,71 @@ eval "$(./run.sh kubeconfig)"          # 이 시나리오 전용 kubeconfig (내
 
 `run.sh`는 아래 과정을 **순서대로 대신 실행**해 주는 스크립트일 뿐이다. 한 번은 손으로 따라 해 보면 CloudFormation이 만드는 것(Secret, IAM Role, Pod Identity 연결)과 그 위에 Kubernetes 설정이 올라가는 방식이 확실히 보인다.
 
-> 직접 만든 환경도 `./run.sh test after`, `./run.sh score`, `./run.sh down`으로 그대로 검증·채점·삭제할 수 있다(스택 이름과 태그만 같게 만들면 된다).
+> 직접 만든 환경도 `./run.sh test before`, `./run.sh test after`, `./run.sh score`, `./run.sh down`으로 그대로 검증·채점·삭제할 수 있다(스택 이름과 태그만 같게 만들면 된다).
+> 6절의 명령은 모두 **이 시나리오 폴더에서, 한 터미널로 순서대로** 실행한다. 앞에서 만든 변수·함수(`MY_ARN`, `EXEC_ROLE` 등)를 뒤에서 그대로 쓰기 때문이다. 터미널을 새로 열었다면 6-1·6-2 를 다시 실행하고(6-2 는 스택이 이미 있으면 `EXEC_ROLE` 만 다시 읽는다), 그 뒤 절에서 만든 변수·함수 정의 줄도 다시 실행한다.
+> macOS 의 zsh 라면 먼저 `setopt interactivecomments` 를 실행한다(명령 뒤 `# 설명` 주석 때문, [START_HERE.md](START_HERE.md) 맨 위 참고).
+
+### 6-0. 작업용 역할 스택 — `cfn/hannctl-identity.yaml` (계정에 한 번만)
+
+`run.sh` 는 처음 실행할 때 이 스택을 자동으로 만든다(`./run.sh doctor` 를 이미 했다면 있으므로 건너뛰어도 된다).
+이 스택이 만드는 IAM 역할 `hannctl-operator-role` 이 이후 모든 작업의 권한이 된다. 역할이 아직 없으므로 이 단계만 **로그인한 자격 증명**으로 실행한다.
+
+```bash
+export AWS_REGION=ap-northeast-2
+LOGIN=hannctl-login     # aws login 으로 받은 프로필. 아직 로그인 전이면: aws login --profile hannctl-login (브라우저 없는 원격 환경은 --remote 추가)
+# 이미 있으면 그대로 쓰고, 없을 때만 만든다 (약 1분, 비용 0원)
+aws cloudformation describe-stacks --stack-name hannctl-identity --profile "$LOGIN" >/dev/null 2>&1 && echo "hannctl-identity 있음 → 그대로 사용" \
+  || aws cloudformation deploy --stack-name hannctl-identity --template-file cfn/hannctl-identity.yaml \
+       --capabilities CAPABILITY_NAMED_IAM --profile "$LOGIN" \
+       --tags Project=hannctl hannctl:role=identity hannctl:est-usd-per-hour=0 hannctl:managed-by=hannctl-cli
+# 프로필 hannctl = "로그인 자격 증명으로 hannctl-operator-role 로 전환" (CLI 가 임시 자격 증명을 알아서 받고 갱신한다)
+ACCT=$(aws sts get-caller-identity --profile "$LOGIN" --query Account --output text)
+aws configure set role_arn "arn:aws:iam::$ACCT:role/hannctl-operator-role" --profile hannctl
+aws configure set source_profile "$LOGIN" --profile hannctl
+aws configure set role_session_name hannctl-cli --profile hannctl
+aws configure set region ap-northeast-2 --profile hannctl
+aws sts get-caller-identity --profile hannctl --query Arn --output text   # → arn:aws:sts::<계정>:assumed-role/hannctl-operator-role/hannctl-cli
+```
+
+> - **CloudShell** 은 이미 로그인되어 있다: `LOGIN` 줄과 `--profile "$LOGIN"` 을 빼고 실행하고, `source_profile` 줄 대신 `aws configure set credential_source EcsContainer --profile hannctl` 을 쓴다.
+> - **root 로 로그인했다면** 역할 전환이 되지 않는다(AWS 제한). 이때는 `./run.sh doctor` 를 실행해 콘솔 사용자 `hannctl-admin` 을 만들고 그 사용자로 다시 로그인한다.
+> - root 로그인 후 만든 **`hannctl-admin` 으로 로그인했다면** 이 스택은 이미 있고, `hannctl-admin` 에는 스택을 조회·생성할 권한이 없다. 스택을 조회·생성하는 `aws cloudformation …` 명령만 건너뛰고 나머지 줄은 그대로 실행한다.
+> - 역할을 만든 직후에는 전환이 몇 초 늦을 수 있다. 마지막 줄이 오류면 10초 뒤 다시 실행한다.
+
+**콘솔로 할 때**: CloudFormation → 스택 생성 → "템플릿 파일 업로드" → `cfn/hannctl-identity.yaml` → 스택 이름 `hannctl-identity` → 태그 `Project=hannctl`, `hannctl:role=identity` 추가 → "IAM 리소스 생성 승인" 체크. 프로필 설정(`ACCT=` 줄부터 끝까지)은 위와 같다.
 
 ### 6-1. 준비 — 내 정보 확인
 
 ```bash
-eval "$(./run.sh kubeconfig)"    # 작업용 역할 hannctl-operator-role 로 작업 (AWS_PROFILE=hannctl, 처음이면 먼저 ./run.sh doctor)
+eval "$(./run.sh kubeconfig)"    # 작업용 역할 hannctl-operator-role 로 작업 (AWS_PROFILE=hannctl — 6-0 에서 만든 프로필)
 export AWS_REGION=ap-northeast-2
-MY_ARN=$(aws sts get-caller-identity --query Arn --output text)   # 클러스터 관리자로 등록할 나 (= hannctl-operator-role)
+# 클러스터 관리자로 등록할 나 = 역할 ARN (get-caller-identity 의 세션 ARN 을 EKS Access Entry 에 쓸 수 있는 역할 ARN 으로 바꾼다)
+MY_ARN=$(aws sts get-caller-identity --query Arn --output text | sed -E 's#:sts::([0-9]+):assumed-role/([^/]+)/.*#:iam::\1:role/\2#')
 MY_IP=$(curl -s https://checkip.amazonaws.com)/32                  # EKS API 에 접속을 허용할 내 IP
 echo "$MY_ARN  $MY_IP"
+#  → arn:aws:iam::<계정>:role/hannctl-operator-role  <내 공인 IP>/32
 ```
 
-> assumed-role ARN(`arn:aws:sts::…:assumed-role/역할/세션`)이면 `arn:aws:iam::<계정>:role/역할` 형태로 바꿔서 쓴다.
+> - `aws sts get-caller-identity` 는 `arn:aws:sts::<계정>:assumed-role/hannctl-operator-role/hannctl-cli` 같은 **세션 ARN** 을 돌려준다. EKS Access Entry 에는 IAM 역할 ARN(`arn:aws:iam::<계정>:role/역할`)만 등록할 수 있어서 위 `sed` 로 바꾼다. `MY_ARN` 이 `arn:aws:sts::` 로 시작하면 6-3 의 스택 생성이 실패하므로 출력 형태를 확인한다.
+> - `eval "$(./run.sh kubeconfig)"` 는 프로필 `hannctl`(6-0 또는 `./run.sh doctor` 가 만든다)을 쓰게 한다. `The config profile (hannctl) could not be found` 가 나오면 6-0 을 먼저 한다.
 
-### 6-2. 공통 안전장치 스택 (계정에 한 번만)
+### 6-2. 공통 안전장치 스택 — `cfn/hannctl-finops-guard.yaml` (계정에 한 번만)
+
+`./run.sh demo`(또는 `up`)를 한 번이라도 실행했다면 이 스택은 이미 있다. 아래 첫 명령은 **스택이 없을 때만** 만들고, 있으면 그대로 둔다. 여러 시나리오가 함께 쓰는 공통 스택이라, 이미 있는 스택에 `deploy` 를 다시 실행하면 다른 실습의 자동 삭제·월 상한 설정까지 바뀔 수 있다.
 
 ```bash
-aws cloudformation deploy --stack-name hannctl-finops-guard \
-  --template-file cfn/hannctl-finops-guard.yaml --capabilities CAPABILITY_NAMED_IAM \
-  --tags Project=hannctl hannctl:role=guard
+aws cloudformation describe-stacks --stack-name hannctl-finops-guard >/dev/null 2>&1 \
+  || aws cloudformation deploy --stack-name hannctl-finops-guard \
+       --template-file cfn/hannctl-finops-guard.yaml --capabilities CAPABILITY_NAMED_IAM \
+       --tags Project=hannctl hannctl:role=guard hannctl:managed-by=hannctl-cli
 EXEC_ROLE=$(aws cloudformation describe-stacks --stack-name hannctl-finops-guard \
   --query "Stacks[0].Outputs[?OutputKey=='CfnExecRoleArn'].OutputValue" --output text)
+echo "$EXEC_ROLE"     # → arn:aws:iam::<계정>:role/hannctl-cfn-exec-role
 ```
 
-**콘솔로 할 때**: CloudFormation → 스택 생성 → "템플릿 파일 업로드" → `cfn/hannctl-finops-guard.yaml` → 스택 이름 `hannctl-finops-guard` → "IAM 리소스 생성 승인" 체크.
+`EXEC_ROLE` 에 `arn:aws:iam::<계정>:role/hannctl-cfn-exec-role` 이 들어 있어야 6-3 으로 넘어갈 수 있다(`echo "$EXEC_ROLE"` 로 확인). 비어 있으면 스택 생성이 아직 끝나지 않은 것이다.
+
+**콘솔로 할 때**(스택이 없을 때만): CloudFormation → 스택 생성 → "템플릿 파일 업로드" → `cfn/hannctl-finops-guard.yaml` → 스택 이름 `hannctl-finops-guard` → 태그 `Project=hannctl`, `hannctl:role=guard`, `hannctl:managed-by=hannctl-cli` 추가 → "IAM 리소스 생성 승인" 체크.
 
 ### 6-3. 시나리오 인프라 스택 — `cfn/stack.yaml`
 
@@ -332,8 +375,10 @@ aws cloudformation deploy --stack-name hannctl-s5-office \
   --tags Project=hannctl hannctl:scenario=s5 hannctl:lifetime-hours=6 hannctl:est-usd-per-hour=0.21
 ```
 
-**콘솔로 할 때**: 템플릿 `cfn/stack.yaml` 업로드 → 스택 이름 `hannctl-s5-office` → 파라미터 `DeployerPrincipalArn`, `EndpointAllowedCidr` 입력 → **"권한 – IAM 역할"에서 `hannctl-cfn-exec-role` 선택** → 태그 4개(`Project=hannctl`, `hannctl:scenario=s5`, `hannctl:lifetime-hours=6`, `hannctl:est-usd-per-hour=0.21`) 추가 → 생성.
-**이벤트** 탭에서 VPC → NAT → EKS(약 10분) → 노드 그룹 → Pod Identity Agent → Secret 2개 → IAM Role → Pod Identity 연결 순서로 만들어지는 것을 볼 수 있다.
+`Waiting for stack create/update to complete` 가 나온 뒤 **약 12~14분** 동안 출력 없이 기다리다가 `Successfully created/updated stack - hannctl-s5-office` 가 나오면 끝난 것이다. 실패하면 콘솔 CloudFormation → `hannctl-s5-office` → **이벤트** 탭에서 `CREATE_FAILED` 줄의 이유를 확인하고, `./run.sh down` 으로 지운 뒤 다시 만든다.
+
+**콘솔로 할 때**: 템플릿 `cfn/stack.yaml` 업로드 → 스택 이름 `hannctl-s5-office` → 파라미터 `DeployerPrincipalArn`(6-1 의 `MY_ARN`), `EndpointAllowedCidr`(6-1 의 `MY_IP`) 입력 → **"권한 – IAM 역할"에서 `hannctl-cfn-exec-role` 선택** → 태그 4개(`Project=hannctl`, `hannctl:scenario=s5`, `hannctl:lifetime-hours=6`, `hannctl:est-usd-per-hour=0.21`) 추가 → 생성.
+**이벤트** 탭에서 Secret 2개·Pod용 IAM Role·레거시 IAM User(처음 1분) → VPC → NAT(약 2분) → EKS(약 10분) → 개발자/운영자 IAM Role·Access Entry → 노드 그룹(약 2분) → Pod Identity Agent → Pod Identity 연결 순서로 만들어지는 것을 볼 수 있다(전체 약 12~14분).
 
 만들어진 것 확인 (값은 보지 않는다):
 
@@ -345,6 +390,7 @@ aws eks list-pod-identity-associations --cluster-name hannctl-s5-office \
 ```
 
 > 💡 실행 역할(`hannctl-cfn-exec-role`)을 지정해야 자동 삭제(janitor)와 `./run.sh down`이 이 스택을 지울 수 있다.
+> 태그 `hannctl:lifetime-hours=6`은 "만든 시각부터 6시간 뒤 자동 삭제"라는 뜻이다.
 
 ### 6-4. EKS 접속 + 기본 구성
 
@@ -362,7 +408,7 @@ kubectl create namespace office
 kubectl -n office create configmap officelink-app --from-file=app/app.py
 kubectl -n office create configmap officelink-config --from-literal=AWS_REGION=$AWS_REGION \
   --from-literal=AWS_DEFAULT_REGION=$AWS_REGION
-kubectl apply -f k8s/base/
+kubectl apply -f k8s/base/          # 'namespace/office configured' + last-applied-configuration 경고는 정상 (앞에서 만든 Namespace 에 설정을 덧붙임)
 
 # 개발자/운영자 IAM Role 로 접속하는 컨텍스트 (IAM Role → Access Entry → K8s 그룹)
 out() { aws cloudformation describe-stacks --stack-name hannctl-s5-office --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text; }
@@ -392,24 +438,81 @@ kubectl --context hannctl-s5-developer -n office auth can-i get secrets
 #  → yes                                (개발자가 K8s Secret = 정적 키를 볼 수 있음 = 위험)
 ```
 
+Before 상태를 채점용 테스트로도 기록해 둔다. `./run.sh test before` 는 클러스터 구성은 바꾸지 않고 **지금 상태 그대로** demo 와 같은 테스트를 실행해, 새 증적 폴더(`evidence/run-<시각>`, `evidence/latest` 가 이 폴더를 가리킨다)에 Before 결과를 기록한다. 이 기록이 있어야 6-7 채점의 "문제 재현(Before)" 항목과 보고서의 Before→After 비교가 채워진다.
+
+```bash
+./run.sh test before          # 약 1분. 결과가 노란색 ✔ 로 표시된다 (위험이 재현됨)
+```
+
 ### 6-6. AFTER — 통제를 하나씩 적용하고 바로 확인
 
-| 순서 | 적용 | 바로 확인 | 기대 결과 |
-|---|---|---|---|
-| ① Pod Identity 전환 | `kubectl apply -f k8s/after/10-workloads-pod-identity.yaml` | `kubectl -n office exec deploy/office-api -- python3 /app/app.py whoami`<br>`… office-api … check hannctl/s5/restricted`<br>`… intruder … check hannctl/s5/allowed` | `role/hannctl-s5-office-app-reader`<br>`ACCESS_DENIED`<br>`ACCESS_DENIED` |
-| ② 정적 키 폐기 | `for k in $(aws iam list-access-keys --user-name hannctl-s5-legacy-app --query 'AccessKeyMetadata[].AccessKeyId' --output text); do aws iam delete-access-key --user-name hannctl-s5-legacy-app --access-key-id $k; done`<br>`kubectl -n office delete secret legacy-aws-credentials` | `aws iam list-access-keys --user-name hannctl-s5-legacy-app --query 'length(AccessKeyMetadata)'`<br>`… office-api … check hannctl/s5/allowed` | `0`<br>`OK` (업무는 무중단) |
-| ③ RBAC | `kubectl delete -f k8s/before/20-legacy-rbac.yaml`<br>`kubectl apply -f k8s/after/30-rbac.yaml` | `kubectl --context hannctl-s5-developer -n office auth can-i get secrets`<br>`kubectl --context hannctl-s5-operator -n office auth can-i patch deployments` | `no`<br>`yes` |
-| ④ Pod 보안 | `kubectl label ns office pod-security.kubernetes.io/enforce=restricted hannctl.io/protected=true`<br>`kubectl apply -f k8s/policies/kyverno-baseline.yaml` | `kubectl apply -n office --dry-run=server -f k8s/attack/privileged-pod.yaml` | `Error … violates PodSecurity` 또는 Kyverno 거부 |
-| ⑤ 네트워크 | `kubectl apply -f k8s/after/50-networkpolicy.yaml` | `kubectl -n office exec deploy/intruder -- python3 /app/app.py probe http://office-api.office.svc.cluster.local/health`<br>`… intruder … python3 /app/app.py imds` | `BLOCKED`<br>`BLOCKED` (노드 역할 우회 불가) |
-| ⑥ 감사 | (몇 분 뒤) `aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=GetSecretValue --max-results 20 --query 'Events[].[EventTime,Username]' --output table` | 누가 Secret 을 읽었나 | Before: `hannctl-s5-legacy-app`<br>After: `eks-hannctl-s5-…` 세션(…-app-reader 역할) |
+각 단계는 "적용 → 바로 확인" 순서다. `# →` 뒤가 기대 결과다.
+
+**① Pod Identity 전환** — 새 Pod 가 뜰 때까지 기다린 뒤 확인한다(기다리지 않으면 아직 남아 있는 옛 Pod 가 응답해 `user/hannctl-s5-legacy-app` 이 나온다).
+
+```bash
+kubectl apply -f k8s/after/10-workloads-pod-identity.yaml
+kubectl -n office rollout status deploy/office-api; kubectl -n office rollout status deploy/intruder
+kubectl -n office exec deploy/office-api -- python3 /app/app.py whoami                       # → role/hannctl-s5-office-app-reader
+kubectl -n office exec deploy/office-api -- python3 /app/app.py check hannctl/s5/restricted  # → ACCESS_DENIED
+kubectl -n office exec deploy/intruder -- python3 /app/app.py check hannctl/s5/allowed       # → ACCESS_DENIED
+```
+
+**② 정적 키 폐기** — 전환을 확인한 뒤에 옛 키를 지운다.
+
+```bash
+for k in $(aws iam list-access-keys --user-name hannctl-s5-legacy-app --query 'AccessKeyMetadata[].AccessKeyId' --output text); do
+  aws iam delete-access-key --user-name hannctl-s5-legacy-app --access-key-id $k
+done
+kubectl -n office delete secret legacy-aws-credentials
+aws iam list-access-keys --user-name hannctl-s5-legacy-app --query 'length(AccessKeyMetadata)'   # → 0
+kubectl -n office exec deploy/office-api -- python3 /app/app.py check hannctl/s5/allowed        # → OK (업무는 무중단)
+```
+
+**③ 사람 권한(RBAC)**
+
+```bash
+kubectl delete -f k8s/before/20-legacy-rbac.yaml
+kubectl apply -f k8s/after/30-rbac.yaml
+kubectl --context hannctl-s5-developer -n office auth can-i get secrets          # → no
+kubectl --context hannctl-s5-operator -n office auth can-i patch deployments     # → yes
+```
+
+**④ Pod 보안(PSA + Kyverno)**
+
+```bash
+kubectl label ns office pod-security.kubernetes.io/enforce=restricted hannctl.io/protected=true
+kubectl apply -f k8s/policies/kyverno-baseline.yaml
+kubectl apply -n office --dry-run=server -f k8s/attack/privileged-pod.yaml
+#  → Error from server (Forbidden): … violates PodSecurity "restricted:latest": privileged … (또는 [hannctl/Kyverno] 거부 메시지)
+```
+
+**⑤ 네트워크(NetworkPolicy)** — 정책이 노드에 반영되는 데 몇 초 걸릴 수 있다. `200` 이 나오면 10초 뒤 다시 실행한다.
+
+```bash
+kubectl apply -f k8s/after/50-networkpolicy.yaml
+kubectl -n office exec deploy/intruder -- python3 /app/app.py probe http://office-api.office.svc.cluster.local/health    # → BLOCKED
+kubectl -n office exec deploy/intruder -- python3 /app/app.py imds                                                       # → BLOCKED (노드 역할 우회 불가)
+kubectl -n office exec deploy/office-web -- python3 /app/app.py probe http://office-api.office.svc.cluster.local/health  # → 200 (정상 통신 유지)
+```
+
+**⑥ 감사(CloudTrail)** — CloudTrail 기록은 보통 1~5분 늦게 나타난다. 방금 한 호출이 아직 없으면 몇 분 뒤 다시 실행한다.
+
+```bash
+aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=GetSecretValue \
+  --max-results 20 --query 'Events[].[EventTime,Username]' --output table
+#  → Before: hannctl-s5-legacy-app (두 Pod 모두 같은 공용 계정)
+#  → After : eks-hannctl-s5-office-api-… (app-reader 역할), eks-hannctl-s5-intruder-… (no-secret 역할) — Pod 마다 다른 신원
+```
 
 ### 6-7. 검증 · 채점 · 삭제는 그대로 자동으로
 
 ```bash
-./run.sh test after      # Before 와 같은 테스트 세트 실행
-./run.sh score           # 평가표 채점 + REPORT.html
-./run.sh down            # 삭제 (레거시 IAM User 의 Access Key 도 먼저 지운다)
+./run.sh test after && ./run.sh score   # Before 와 같은 테스트(약 1분, CloudTrail 기록이 늦으면 최대 10분 대기) → 채점 + REPORT.md / REPORT.html (Before→After 비교)
+./run.sh down            # 삭제 (레거시 IAM User 의 Access Key 도 먼저 지운다, 약 8~10분)
 ```
+
+> `./run.sh test after` 는 클러스터 구성을 바꾸지 않고 **직접 구성한 상태 그대로** Before 와 같은 테스트를 실행해, 가장 최근 증적 폴더(6-5 의 `test before` 가 만든 폴더)에 이어 기록한다. 그래서 `score` 가 Before·After 를 함께 채점한다. 6-5 의 `test before` 를 건너뛰면 Before 항목이 채워지지 않는다.
 
 ---
 
@@ -432,14 +535,15 @@ kubectl --context hannctl-s5-developer -n office auth can-i get secrets
 
 ```text
 s5-secret-iam-least-privilege/
-├── run.sh                    # 유일한 진입점 (demo / up / before / after / test / score / status / watch / lifetime / down)
+├── run.sh                    # 유일한 진입점 (doctor / demo / up / before / after / test / score / status / watch / cost / lifetime / down)
 ├── README.md                 # 이 문서 (학습 가이드)
+├── START_HERE.md             # 처음 시작하기 (내려받기 · 준비 · 점검 · 실행 · 삭제)
 ├── RUBRIC.md / rubric.json   # 평가표 (사람용 / 자동 채점용)
 ├── cfn/
 │   ├── stack.yaml            # AWS 인프라 전부: VPC, EKS, 노드(IMDS hop 1), Pod Identity Agent, Secret 2개,
 │   │                         #   Pod Identity Role/연결 2개, 레거시 IAM User, 개발자/운영자 Role + Access Entry, 로그
 │   ├── hannctl-identity.yaml      # 작업용 역할 hannctl-operator-role (+root 로그인 시 hannctl-admin) — 자동 생성
-│   └── hannctl-finops-guard.yaml   # 공통 안전장치 (실행 역할, 자동 삭제 Lambda, 예산)
+│   └── hannctl-finops-guard.yaml  # 공통 안전장치 (실행 역할, 자동 삭제 Lambda, 예산)
 ├── app/app.py                # 업무 API (boto3 표준 자격증명 체인, 값 마스킹) — ConfigMap 주입, 이미지 빌드 불필요
 ├── k8s/
 │   ├── base/                 # Namespace, ServiceAccount 2개, Service, 사내 포털(office-web)
@@ -447,10 +551,20 @@ s5-secret-iam-least-privilege/
 │   ├── after/                # 10 Pod Identity 워크로드, 30 RBAC, 50 NetworkPolicy
 │   ├── policies/             # Kyverno 정책 (privileged / hostPath / root)
 │   └── attack/               # 위험 Pod 예시 (서버측 dry-run 으로만 사용)
-├── lib/                      # 공통 스크립트 (common.sh, score.py, tagcheck.py)
+├── lib/                      # 공통 스크립트 (common.sh, 채점기 score.py, 태그 감사 tagcheck.py, 비용 추정 cost.py)
 ├── tools/install-tools.sh    # 필요한 도구 확인 → 없는 것만 설치 (python3·AWS CLI·kubectl·helm 등, macOS/Linux)
 └── evidence/                 # 실행 결과 (results.jsonl, REPORT.md/html, before/, after/) — 비밀값·키 원문은 저장하지 않음
 ```
+
+**`cfn/` 템플릿 3개의 관계**
+
+| 템플릿 | 만드는 스택 → 주요 리소스 | 언제 만들어지나 |
+|---|---|---|
+| `hannctl-identity.yaml` | `hannctl-identity` → 작업용 역할 `hannctl-operator-role` (+root 로 로그인했을 때 콘솔 사용자 `hannctl-admin`) | `run.sh` 첫 실행 때 자동 (손으로는 6-0) |
+| `hannctl-finops-guard.yaml` | `hannctl-finops-guard` → 자동 삭제 Lambda `hannctl-janitor`, 월 예산, CloudFormation 실행 역할 `hannctl-cfn-exec-role` | 첫 `demo`/`up` 때 자동 (손으로는 6-2) |
+| `stack.yaml` | `hannctl-s5-office` → 이 시나리오의 실습 인프라 전부. `hannctl-cfn-exec-role` 로 배포되므로 guard 스택이 먼저 있어야 한다 | `demo`/`up` 때 자동 (손으로는 6-3) |
+
+> 앞의 두 스택은 계정에 하나씩만 있고 모든 시나리오가 함께 쓴다(비용 0원 수준). `./run.sh down` 은 시나리오 스택만 지우고, 공용 스택은 `./run.sh down-all`(guard) / `./run.sh down-all --identity`(identity 까지)로 지운다(9장 참고).
 
 ---
 
@@ -461,8 +575,8 @@ s5-secret-iam-least-privilege/
 | 항목 | 값 (서울, 1USD≈1,400원) |
 |---|---|
 | 시간당 단가 | **$0.21 ≈ 290원** (EKS $0.10 + t4g.medium 노드 1대 $0.042 + NAT $0.059 + 공인 IP $0.005 + Secret 2개 비례분) |
-| `demo` 1회 (처음, 인프라 생성 포함) | 스택 생성 실측 13분 + Before/After/채점 약 3~5분 → 약 **$0.07 ≈ 100원** |
-| `demo` 재실행 실측 (인프라 있음) | 2분 → **$0.01 ≈ 15원** (Before 대기 20초 기준) |
+| `demo` 1회 (처음, 인프라 생성 포함) | 실측 17~19분 (스택 생성 12~14분 + 클러스터 구성 1분 + Before/After/채점 약 3분) → 약 **$0.06 ≈ 90원** |
+| `demo` 재실행 (인프라 있음) | 약 3~4분 (Before 1분 + 관찰 대기 60초 + 개선·After·채점 약 2분) → **$0.01 ≈ 15원** |
 | 방치했을 때 최대 | 유지 시간(기본 6h) × 단가 = **$1.26 ≈ 1,800원** 후 자동 삭제 |
 | 월 상한 | **$20 ≈ 28,000원** (hannctl 전체 누적 예상치 기준, 도달 시 자동 정리) |
 
@@ -471,11 +585,11 @@ s5-secret-iam-least-privilege/
 | 장치 | 내용 |
 |---|---|
 | **유지 시간** | 처음 시작할 때 정한다(기본 **6시간**, 0~24, 0 = 무제한). 기준은 항상 **스택 생성 시각**이다. `hannctl-janitor`가 10분마다 확인해 만료된 **hannctl 스택만** 삭제하고, 그 전에 레거시 IAM User의 Access Key도 지운다. 변경: `./run.sh lifetime 9` (생성 시각 + 9시간) |
-| **방치 시 최대 비용** | 유지 시간 × 단가 = 6h × $0.21 ≈ **$1.3(≈1,800원)** |
-| **월 상한** | `Project=hannctl` 비용 기준 월 **$20(≈3만원)**. 월 누적 예상치가 상한에 닿으면 janitor가 hannctl 스택을 정리한다(`HANNCTL_ALERT_EMAIL`로 메일 알림) |
+| **방치 시 최대 비용** | 유지 시간 × 단가 = 6h × $0.21 ≈ **$1.26(≈1,800원)** |
+| **월 상한** | `Project=hannctl` 비용 기준 월 **$20(≈2.8만원)**. 월 누적 예상치가 상한에 닿으면 janitor가 hannctl 스택을 정리한다(`HANNCTL_ALERT_EMAIL`로 메일 알림) |
 | **비용 절감** | Graviton 노드 1대(필요 시 2대, `HANNCTL_CAPACITY=SPOT` 으로 더 저렴하게 가능), NAT 1개, 로그 3일 보존, LoadBalancer 미사용, 공개 이미지 사용(ECR/빌드 없음) |
 | **보안 위생** | 정적 키는 Before 동안만 존재하고 개선 2에서 폐기, `down`할 때도 다시 확인한다. 화면·증적에는 키 ID와 비밀값을 **앞 4자리만** 표시한다 |
-| **삭제** | `./run.sh down` (스택 + Access Key + 잔여 확인). `./run.sh down-all` 은 공통 안전장치까지 삭제 |
+| **삭제** | `./run.sh down` (스택 + Access Key + 잔여 확인). `./run.sh down-all` 은 공통 안전장치까지(다른 hannctl 스택이 없을 때만), `./run.sh down-all --identity` 는 작업용 역할(`hannctl-identity` 스택)까지 삭제 |
 
 모든 AWS 리소스는 이름이 `hannctl-`(Secret은 `hannctl/s5/…`)로 시작하거나 `Project=hannctl` 태그를 가진다(`tag_compliance` 자동 검사).
 

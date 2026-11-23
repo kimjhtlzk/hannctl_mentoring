@@ -63,28 +63,79 @@ ci_build() { # ci_build PHASE NAME VARIANT GATE APP_VERSION → CI_STATUS CI_GAT
   printf '\n'
   CI_STATUS=$st
   CI_SECONDS=$(( $(date +%s) - t0 ))   # 대기 포함 CI 소요 시간(사람이 체감하는 검사 시간)
-  # CI 로그 수집 (CloudWatch 반영 지연 대비 재시도)
-  local grp strm log="$RUN_DIR/$phase/ci-$name.log" i
-  read -r grp strm <<<"$(aws codebuild batch-get-builds --ids "$id" --query 'builds[0].logs.[groupName,streamName]' --output text)"
-  for i in 1 2 3 4 5 6; do
-    aws logs filter-log-events --log-group-name "$grp" --log-stream-names "$strm" --query 'events[].message' --output text 2>/dev/null |
-      tr '\t' '\n' > "$log"
-    grep -q "Phase complete: BUILD\|GATE_RESULT" "$log" && break
-    sleep 5
-  done
-  # 실제 출력만 매칭(로그에 함께 찍히는 명령문 'GATE_RESULT=$R' 은 대문자로 시작하지 않아 제외됨)
-  CI_GATE=$(grep -o 'GATE_RESULT=[A-Z][A-Z]*' "$log" | tail -1 | cut -d= -f2); CI_GATE=${CI_GATE:-NONE}
-  CI_SUMMARY=$(grep -o 'TRIVY_SUMMARY.*' "$log" | tail -1 | sed 's/TRIVY_SUMMARY //')
-  CI_DIGEST=$(grep -o 'IMAGE_DIGEST=sha256:[0-9a-f]*' "$log" | tail -1 | cut -d= -f2)
+  local log="$RUN_DIR/$phase/ci-$name.log"
+  ci_log "$id" "$log"
+  ci_parse "$log"
   info "빌드 $CI_STATUS (${CI_SECONDS}s) · Trivy HIGH/CRITICAL: ${CI_SUMMARY:-없음} · 게이트: $CI_GATE${CI_DIGEST:+ · digest ${CI_DIGEST:0:19}…}"
   grep '^VULN ' "$log" | head -5 | sed 's/^/      /'
   timeline "$phase" "CI 빌드 $name ($variant, gate=$gate)" "$CI_STATUS · $CI_GATE · ${CI_SUMMARY:-} · ${CI_SECONDS}s"
+}
+
+ci_log() { # ci_log BUILD_ID FILE — CodeBuild 로그를 증적 파일로 저장 (CloudWatch 반영 지연 대비 재시도)
+  local grp strm i
+  read -r grp strm <<<"$(aws codebuild batch-get-builds --ids "$1" --query 'builds[0].logs.[groupName,streamName]' --output text)"
+  for i in 1 2 3 4 5 6; do
+    aws logs filter-log-events --log-group-name "$grp" --log-stream-names "$strm" --query 'events[].message' --output text 2>/dev/null |
+      tr '\t' '\n' > "$2"
+    grep -q "Phase complete: BUILD\|GATE_RESULT" "$2" && break
+    sleep 5
+  done
+}
+ci_parse() { # ci_parse LOG → CI_GATE CI_SUMMARY CI_DIGEST
+  # 실제 출력만 매칭(로그에 함께 찍히는 명령문 'GATE_RESULT=$R' 은 대문자로 시작하지 않아 제외됨)
+  CI_GATE=$(grep -o 'GATE_RESULT=[A-Z][A-Z]*' "$1" | tail -1 | cut -d= -f2); CI_GATE=${CI_GATE:-NONE}
+  CI_SUMMARY=$(grep -o 'TRIVY_SUMMARY.*' "$1" | tail -1 | sed 's/TRIVY_SUMMARY //')
+  CI_DIGEST=$(grep -o 'IMAGE_DIGEST=sha256:[0-9a-f]*' "$1" | tail -1 | cut -d= -f2)
+}
+ci_find() { # ci_find VARIANT GATE → 이 조건으로 실행된 가장 최근 빌드의 "ID 상태 태그" (README 6절처럼 직접 돌린 빌드 찾기)
+  local ids; ids=$(aws codebuild list-builds-for-project --project-name "$CI_PROJECT" --query 'ids[:20]' --output text 2>/dev/null)
+  [ -n "$ids" ] && [ "$ids" != None ] || return 0
+  # shellcheck disable=SC2086
+  aws codebuild batch-get-builds --ids $ids --output json \
+    --query 'builds[].{i:id,s:buildStatus,t:startTime,e:environment.environmentVariables}' 2>/dev/null |
+    python3 -c 'import json,sys
+v,g=sys.argv[1:3]
+for b in sorted(json.load(sys.stdin),key=lambda b:str(b["t"]),reverse=True):
+    e={x["name"]:x["value"] for x in b["e"] or []}
+    if e.get("VARIANT")==v and e.get("GATE")==g and b["s"]!="IN_PROGRESS":
+        print(b["i"],b["s"],e.get("IMAGE_TAG","-")); break' "$1" "$2"
+}
+ci_from_history() { # test 전용: 이번 증적에 CI 결과가 없으면(README 6절 수동 경로) CodeBuild 이력에서 해당 빌드를 찾아 기록
+  local p=$1 id st tag
+  grep -q "\"key\": \"ci_vuln_build\", \"phase\": \"$p\"" "$RUN_DIR/results.jsonl" 2>/dev/null && return 0
+  section "[$p] 0) CI: CodeBuild 이력에서 가장 최근 빌드 결과 수집"
+  if [ "$p" = before ]; then
+    read -r id st tag <<<"$(ci_find vuln off)"
+    [ -n "$id" ] || { warn "VARIANT=vuln GATE=off 빌드 이력이 없습니다 (README 6-5 ②)"; return 0; }
+    ci_log "$id" "$RUN_DIR/before/ci-vuln.log"; ci_parse "$RUN_DIR/before/ci-vuln.log"
+    record ci_vuln_build before SUCCEEDED "$st" "CI: 취약 이미지 빌드 결과" "${CI_SUMMARY:-} ${id##*:}"
+    record vuln_in_ecr before PRESENT "$(ecr_tag_state "$tag")" "ECR: 취약 이미지 저장 여부" "$tag"
+    echo "$tag" > "$RUN_DIR/vuln_tag"
+    return 0
+  fi
+  read -r id st tag <<<"$(ci_find vuln on)"
+  if [ -n "$id" ]; then
+    ci_log "$id" "$RUN_DIR/after/ci-vuln-gated.log"; ci_parse "$RUN_DIR/after/ci-vuln-gated.log"
+    record ci_vuln_build after FAILED "$st" "CI: 취약 이미지 빌드 결과" "${CI_SUMMARY:-} ${id##*:}"
+    record gate_reason after BLOCKED "$CI_GATE" "CI: 실패 원인이 Trivy 게이트인가"
+    record vuln_in_ecr after ABSENT "$(ecr_tag_state "$tag")" "ECR: 취약 이미지 저장 여부" "$tag"
+  else warn "VARIANT=vuln GATE=on 빌드 이력이 없습니다 (README 6-6 ①)"; fi
+  read -r id st tag <<<"$(ci_find secure on)"
+  if [ -n "$id" ]; then
+    ci_log "$id" "$RUN_DIR/after/ci-secure.log"; ci_parse "$RUN_DIR/after/ci-secure.log"
+    record ci_secure_build after SUCCEEDED "$st" "CI: 정상 이미지 빌드 결과" "${CI_SUMMARY:-} ${id##*:}"
+  else warn "VARIANT=secure GATE=on 빌드 이력이 없습니다 (README 6-6 ②)"; fi
 }
 
 deploy_image() { # deploy_image IMAGE_REF — Deployment 생성/갱신 후 롤아웃 대기
   sed "s#__IMAGE__#$1#" "$K8S/base/release-api.yaml" | k apply -f - >/dev/null
   k -n "$NS" set image deploy/release-api "app=$1" >/dev/null
   k -n "$NS" rollout status deploy/release-api --timeout=180s >/dev/null || warn "롤아웃 지연"
+  # Service 를 처음 만든 직후에는 노드의 연결 규칙 반영에 몇 초 걸린다 → 서비스 주소로 응답할 때까지 대기(최대 60초)
+  local i; for i in $(seq 1 20); do
+    [ "$(k -n "$NS" exec deploy/release-api -- python3 /app/app.py probe "http://release-api.$NS.svc.cluster.local/health" 2>/dev/null | tail -1)" = 200 ] && break
+    sleep 3
+  done
 }
 
 # ----------------------------------------------------------------------------- 기본 구성
@@ -115,8 +166,9 @@ scenario_before() {
   section "취약 이미지를 운영 Namespace 에 배포 (태그로 배포, 추적 정보 없음)"
   lesson "태그(:v1.0.0-…)만으로 배포하면 '지금 운영에 정확히 어떤 내용의 이미지가 떠 있나'를 증명하기 어렵다"
   cmdline "kubectl -n $NS set image deploy/release-api app=…/$REPO_NAME:$CI_TAG"
-  deploy_image "$(repo_uri):$CI_TAG"
+  # 추적 정보는 배포 "전에" 지운다 (남아 있으면 새 ReplicaSet 에 복사되어 rollout history 에 이전 CI 빌드가 원인으로 찍힌다)
   k -n "$NS" annotate deploy/release-api hannctl.io/git-commit- hannctl.io/image-digest- hannctl.io/ci-build-id- kubernetes.io/change-cause- >/dev/null 2>&1
+  deploy_image "$(repo_uri):$CI_TAG"
   ok "Before 적용: 취약 이미지가 운영에서 실행 중"
 }
 
@@ -185,6 +237,7 @@ infra_tests() {
 
 scenario_tests() {
   local p=$1
+  ci_from_history "$p"
   section "[$p] 1) 운영 중인 워크로드: 어떤 이미지가 실행되고 있나"
   workload_tests "$p"
   section "[$p] 2) 클러스터 입구(Admission): 이미지 출처 + 위험 Pod (서버측 dry-run)"
@@ -200,7 +253,8 @@ scenario_tests() {
   # 참고(채점 외): ECR 기본 스캔은 OS 패키지 중심 → 언어 라이브러리(Django) 취약점은 CI 의 Trivy 가 잡는다
   local vt; vt=$(cat "$RUN_DIR/vuln_tag" 2>/dev/null)
   [ -n "$vt" ] && aws ecr describe-image-scan-findings --repository-name "$REPO_NAME" --image-id "imageTag=$vt" \
-    --query 'imageScanFindings.findingSeverityCounts' --output json > "$RUN_DIR/$p/ecr-basic-scan.json" 2>/dev/null
+    --query '{status:imageScanStatus.status,findings:length(imageScanFindings.findings || `[]`),severityCounts:imageScanFindings.findingSeverityCounts}' \
+    --output json > "$RUN_DIR/$p/ecr-basic-scan.json" 2>/dev/null
   timeline "$p" "$p 테스트 완료" "$(grep -c "\"phase\": \"$p\"" "$RUN_DIR/results.jsonl") 개 항목"
 }
 
@@ -239,7 +293,8 @@ step_admission_policies() {
   out=$(k apply -f "$K8S/policies/kyverno-baseline.yaml" 2>&1) || { echo "$out"; die "정책 적용 실패"; }
   out=$(sed "s#__REGISTRY__#$(registry)#g" "$K8S/policies/trusted-registry.yaml" | k apply -f - 2>&1) || { echo "$out"; die "정책 적용 실패"; }
   wait_policies
-  info "즉시 확인 → 외부 이미지: $(admission_try "$NS" "$RUN_DIR/after/admission-untrusted-registry-step.txt" < "$K8S/attack/untrusted-registry-pod.yaml"), 기존 정상 Pod: $(k -n "$NS" get pods --no-headers | awk '{print $3}' | sort | uniq -c | tr -s ' ' | tr '\n' ' ')"
+  # 기존 서비스 Pod 는 정책 적용 후에도 그대로 Running (개선 2 에서 교체된 이전 Pod 가 종료 중일 수 있어 Deployment 의 Ready 수로 표시)
+  info "즉시 확인 → 외부 이미지: $(admission_try "$NS" "$RUN_DIR/after/admission-untrusted-registry-step.txt" < "$K8S/attack/untrusted-registry-pod.yaml"), 기존 서비스 Pod(release-api): $(k -n "$NS" get deploy release-api -o jsonpath='{.status.readyReplicas}/{.spec.replicas}') Running"
 }
 scenario_after() {
   improve 1 3 "CI 보안 게이트 켜기 (Trivy HIGH/CRITICAL)" "GATE=on 으로 같은 취약 소스를 다시 빌드" "취약 이미지는 빌드 실패 → ECR Push·배포 자체가 일어나지 않음" step_gate_on \

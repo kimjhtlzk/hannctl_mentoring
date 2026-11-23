@@ -29,7 +29,7 @@ scenario_up() {
   role_contexts
   section "고객사 A/B 워크로드 배포 (web → api)"
   for t in a b; do
-    k get namespace "tenant-$t" >/dev/null 2>&1 || k create namespace "tenant-$t" >/dev/null   # 없을 때만 생성 (After 보안 라벨 보존)
+    k get namespace "tenant-$t" >/dev/null 2>&1 || k create namespace "tenant-$t" --save-config >/dev/null   # 없을 때만 생성 (After 보안 라벨 보존)
     k -n "tenant-$t" create configmap bizdesk-app --from-file="$SCEN_DIR/app/app.py" --dry-run=client -o yaml | k apply -f - >/dev/null
   done
   k apply -f "$K8S/base/" >/dev/null
@@ -187,6 +187,14 @@ scenario_after() {
     "ClusterRoleBinding = 클러스터 전체, RoleBinding = 그 Namespace 만. IAM Role → Access Entry(그룹) → RoleBinding 순서로 권한이 결정된다"
   improve 4 4 "위험 Pod 차단(PSA restricted + Kyverno)" "Namespace 에 PSA restricted 라벨 + Kyverno ValidatingPolicy 3개" "privileged/hostPath/root Pod 생성 요청 거부" step_pod_security \
     "Admission 은 '만들어지기 전에' 거부한다. 이미 실행 중인 정상 Pod 는 그대로 동작하고, 새로 만드는 위험한 Pod 만 막힌다"
+}
+
+scenario_watch() { # ./run.sh watch 화면: 격리 현황 + NetworkPolicy + Kyverno 정책 (Before → After 변화가 한눈에 보이도록)
+  scenario_status
+  section "NetworkPolicy (Before: 없음 → 개선 1: default-deny → 개선 2: allow-list 추가)"
+  k get networkpolicy -A -l hannctl.io/scenario=s2 2>&1
+  section "Kyverno ValidatingPolicy (개선 4 이후 3개 READY)"
+  k get validatingpolicy 2>&1
 }
 
 scenario_status() {

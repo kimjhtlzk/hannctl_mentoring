@@ -1,6 +1,7 @@
-# 시나리오 2 · B2B SaaS 고객사별 보안 격리 (BizDesk)
+# 시나리오 2 · B2B SaaS 고객사별 보안 격리 (BizDesk) — 해설서
 
-> 🚀 **처음이라면 → [START_HERE.md](START_HERE.md)** (내려받기 → 준비 → `./run.sh doctor` → `./run.sh demo` → 삭제)
+> ▶ **실습은 [GUIDE.md](GUIDE.md) 하나만 보고 따라간다** (내려받기·준비도 GUIDE.md 0단계에 있다).
+> 이 문서는 시나리오의 배경·원리·직접 구성 방법·발표 포인트를 담은 해설서다.
 
 > **한 줄 요약**
 > 고객사 A와 B가 **같은 EKS 클러스터**를 같이 쓰더라도
@@ -13,10 +14,11 @@
 |---|---|
 | 난이도 | ★★★☆☆ (3/5) — 네트워크·권한 개념이 핵심, 코드 작성은 거의 없음 |
 | 핵심 기술 | Amazon EKS, VPC CNI **NetworkPolicy**, Kubernetes **RBAC**, EKS **Access Entry**(IAM↔K8s), **PSA**, **Kyverno**, CloudWatch 감사 로그 |
-| 소요 시간 | 처음 `demo` 약 25~30분(인프라 생성 15분 포함), 이후 재실행 약 8분 |
-| 예상 비용 | 약 **$0.21/시간(≈290원)**, demo 1회 약 **$0.15(≈200원)** — 자세한 내용은 [9장](#9-비용-안전장치-삭제-finops) |
+| 소요 시간 | 처음 `demo` 약 17~20분(인프라 생성 약 12분 포함), 스택이 있을 때 재실행 약 4분, 삭제(`down`) 약 8~10분 |
+| 예상 비용 | 약 **$0.21/시간(≈290원)**, demo 1회(삭제까지) 약 **$0.09(≈130원)** — 자세한 내용은 [9장](#9-비용-안전장치-삭제-finops) |
 | 과정 요구사항 연결 | 접근·네트워크 통제(RBAC 최소권한, NetworkPolicy 네임스페이스 격리), 정책 기반 통제(PSS/Kyverno), 감사 로그 |
 
+---
 
 ## 🎯 이 시나리오의 초점 (먼저 읽기)
 
@@ -60,8 +62,9 @@ cd s2-saas-tenant-isolation
 ./run.sh down                      # 끝나면 전부 삭제 (잊어도 처음 정한 유지 시간, 기본 6시간 뒤 자동 삭제)
 ```
 
-`demo`가 끝나면 `evidence/latest/REPORT.html`이 자동으로 열린다. 점수, Before→After 비교, 전환 타임라인을 한 화면에서 볼 수 있다.
-진행되는 동안 **다른 터미널에서 `./run.sh watch`** 를 켜 두면 Pod, 정책, 권한이 바뀌는 모습을 실시간으로 볼 수 있다.
+`demo`가 끝나면 `evidence/latest/REPORT.html`이 열린다(열리지 않으면 [START_HERE.md](START_HERE.md) 5단계 참고). 점수, Before→After 비교, 전환 타임라인을 한 화면에서 볼 수 있다.
+진행되는 동안 **다른 터미널에서 `./run.sh watch`** 를 켜 두면 Namespace 보안 라벨, Pod, NetworkPolicy, Kyverno 정책, 권한(RoleBinding)이 바뀌는 모습을 5초마다 볼 수 있다(새 터미널에서도 이 폴더로 `cd` 한 뒤 실행).
+> `demo` 를 시작하자마자 켜도 된다. 클러스터가 만들어지는 동안(약 10~15분)은 `⏳ EKS 클러스터 hannctl-s2-saas 준비 대기 중` 화면이 15초마다 갱신되고, 클러스터가 준비되면 자동으로 관찰 화면으로 바뀐다. 끝낼 때는 `Ctrl+C`.
 
 > 처음 한 번 필요한 것: 내 AWS 계정에 관리자로 콘솔 로그인할 수 있으면 된다. 처음 실행할 때 브라우저 로그인으로 임시 자격 증명을 받고, 작업용 역할 `hannctl-operator-role` 이 자동으로 만들어진다(Access Key·`aws configure` 불필요). python3·AWS CLI·kubectl·helm 등은 **없는 것만 자동 설치**된다. 자세한 준비는 [START_HERE.md](START_HERE.md) 참고.
 > macOS, Ubuntu, CentOS/Rocky, AWS CloudShell에서 동작한다.
@@ -205,7 +208,7 @@ sequenceDiagram
   participant CF as CloudFormation
   participant K as EKS 클러스터
   U->>R: ./run.sh demo --before-wait 60
-  R->>CF: guard 스택(최초 1회) + hannctl-s2-saas 스택 배포 (~15분, 리소스가 하나씩 생성되는 과정 출력)
+  R->>CF: guard 스택(최초 1회) + hannctl-s2-saas 스택 배포 (~12분, 리소스가 하나씩 생성되는 과정 출력)
   R->>K: Kyverno 설치, tenant-a/b web·api 배포
   R->>K: BEFORE 적용 (정책 없음 + 과다 권한)
   R->>K: BEFORE 테스트 → 위험이 "재현"됨 (노란색)
@@ -226,7 +229,7 @@ sequenceDiagram
 | **개선 1** default-deny | 각 테넌트에 "모든 통신 차단" 정책 | ⚠️ A→B 뿐 아니라 **A→A, DNS까지 끊긴다** | **가장 중요한 학습 지점**: 차단만 하면 서비스가 죽는다. 보안과 가용성을 함께 봐야 한다 |
 | **개선 2** allow-list | DNS(53), 같은 테넌트 web→api(8080)만 허용 | A→A `200` 복구, A→B는 계속 `BLOCKED` | "필요한 것만 연다"는 **화이트리스트** 설계 |
 | **개선 3** RBAC | 전체 `edit` 바인딩 삭제 → 테넌트별 Role (조회·재시작만) | A 운영자: A 조회 `yes`, B 조회 `no`, Secret 조회 `no` | 사람의 권한도 **최소 권한**으로. 업무에 필요한 것(재시작)은 남긴다 |
-| **개선 4** Pod 보안 | Namespace에 PSA `restricted` 라벨, Kyverno 정책 3개 | 위험 Pod `DENIED` (거부 메시지 출력), 기존 정상 Pod는 계속 Running | 위험한 설정을 **만들어지기 전에** 거부한다(사후 탐지보다 사전 예방) |
+| **개선 4** Pod 보안 | Namespace에 PSA `restricted` 라벨, Kyverno 정책 3개 | privileged Pod `DENIED`, 기존 정상 Pod는 계속 `Running` (PSA·Kyverno 거부 메시지는 이어지는 After 테스트에서 출력) | 위험한 설정을 **만들어지기 전에** 거부한다(사후 탐지보다 사전 예방) |
 | **AFTER** | Before와 **똑같은 테스트** 재실행 + 감사 로그 확인 | 교차 통신·교차 권한·위험 Pod 모두 차단, 정상 경로 유지 | 같은 조건에서 비교해야 개선이라고 말할 수 있다 |
 
 ### 4-2. "이렇게 설정하면 → 이렇게 된다" (설정 · 결과 · 배운 점)
@@ -238,7 +241,7 @@ sequenceDiagram
 | `k8s/after/10-default-deny.yaml`<br>`podSelector: {}`<br>`policyTypes: [Ingress, Egress]` | A→A `BLOCKED`, A→B `BLOCKED`, DNS `FAILED` | `podSelector: {}` 는 "이 Namespace의 **모든** Pod". 허용 없이 차단만 하면 정상 서비스도 멈춘다 |
 | `k8s/after/20-allow-required.yaml`<br>`to: kube-dns, ports: 53`<br>`from: app=web → app=api :8080` | A→A `200`, A→B `BLOCKED` | NetworkPolicy는 **허용 규칙의 합집합**. 열어 준 길만 통하고, 다른 테넌트로 가는 길은 규칙이 없으니 막힌다 |
 | `k8s/after/30-tenant-rbac.yaml`<br>`kind: Role (namespace: tenant-a)`<br>`verbs: [get, list, watch]` + `deployments: [patch]` | A 운영자: A 조회 `yes`, B 조회 `no`, Secret `no` | **ClusterRoleBinding = 클러스터 전체, RoleBinding = 그 Namespace만**. 권한은 IAM Role → Access Entry(그룹) → RoleBinding 순으로 결정된다 |
-| `kubectl label ns … pod-security.kubernetes.io/enforce=restricted`<br>`k8s/policies/kyverno-baseline.yaml` | 위험 Pod `DENIED` + 거부 메시지, 기존 Pod는 `Running` 유지 | Admission은 **만들어지기 전에** 거부한다. 실행 중인 정상 Pod에는 영향이 없다 |
+| `kubectl label ns … pod-security.kubernetes.io/enforce=restricted`<br>`k8s/policies/kyverno-baseline.yaml` | 위험 Pod `DENIED`, 기존 Pod는 `Running` 유지 (After 테스트에서 PSA 거부 메시지 `violates PodSecurity "restricted:latest"` 와 Kyverno 거부 메시지 `Policy hannctl-… failed` 출력) | Admission은 **만들어지기 전에** 거부한다. 실행 중인 정상 Pod에는 영향이 없다 |
 
 ### 4-3. Before → After 기대 결과표
 
@@ -277,7 +280,7 @@ eval "$(./run.sh kubeconfig)"        # 이 시나리오 전용 kubeconfig (내 ~
 | 4 | 교차 통신 직접 시도 | `kubectl -n tenant-a exec deploy/web -- python3 /app/app.py probe http://api.tenant-b.svc.cluster.local/tenant` |
 | 5 | 적용된 네트워크 정책 | `kubectl get networkpolicy -A` / `kubectl describe networkpolicy allow-web-to-api-egress -n tenant-a` |
 | 6 | A 운영자로 접속해 보기 | `kubectl --context hannctl-s2-tenant-a get pods -n tenant-a` (성공) / `-n tenant-b` (Forbidden) |
-| 7 | 권한 목록 | `kubectl --context hannctl-s2-tenant-a auth can-i --list -n tenant-a` |
+| 7 | 권한 목록 | `kubectl --context hannctl-s2-tenant-a auth can-i --list -n tenant-a` (첫 줄 `Warning: the list may be incomplete` 는 EKS 가 webhook 인가를 함께 쓰기 때문에 나오는 정상 안내다) |
 | 8 | IAM ↔ K8s 연결 | `aws eks list-access-entries --cluster-name hannctl-s2-saas` |
 | 9 | Namespace 보안 라벨 | `kubectl get ns tenant-a --show-labels` |
 | 10 | Kyverno 정책 | `kubectl get validatingpolicy` (READY 열) / `kubectl describe validatingpolicy hannctl-disallow-privileged` |
@@ -290,31 +293,70 @@ eval "$(./run.sh kubeconfig)"        # 이 시나리오 전용 kubeconfig (내 ~
 
 `run.sh`는 아래 과정을 **순서대로 대신 실행**해 주는 스크립트일 뿐이다. 한 번은 손으로 따라 해 보면 "CloudFormation이 무엇을 만들고, 그 위에 Kubernetes 설정이 어떻게 올라가는지"가 확실히 보인다.
 
-> 직접 만든 환경도 `./run.sh test after`, `./run.sh score`, `./run.sh down`으로 그대로 검증·채점·삭제할 수 있다(스택 이름과 태그만 같게 만들면 된다).
+> 직접 만든 환경도 `./run.sh test before`, `./run.sh test after`, `./run.sh score`, `./run.sh down`으로 그대로 검증·채점·삭제할 수 있다(스택 이름과 태그만 같게 만들면 된다).
+> 6절의 명령은 모두 **이 시나리오 폴더에서, 한 터미널로 순서대로** 실행한다. 앞에서 만든 변수·함수(`MY_ARN`, `EXEC_ROLE` 등)를 뒤에서 그대로 쓰기 때문이다. 터미널을 새로 열었다면 6-1·6-2 를 다시 실행하고(6-2 는 스택이 이미 있으면 `EXEC_ROLE` 만 다시 읽는다), 그 뒤 절에서 만든 변수·함수 정의 줄도 다시 실행한다.
+> macOS 의 zsh 라면 먼저 `setopt interactivecomments` 를 실행한다(명령 뒤 `# 설명` 주석 때문, [START_HERE.md](START_HERE.md) 맨 위 참고).
+
+### 6-0. 작업용 역할 스택 — `cfn/hannctl-identity.yaml` (계정에 한 번만)
+
+`run.sh` 는 처음 실행할 때 이 스택을 자동으로 만든다(`./run.sh doctor` 를 이미 했다면 있으므로 건너뛰어도 된다).
+이 스택이 만드는 IAM 역할 `hannctl-operator-role` 이 이후 모든 작업의 권한이 된다. 역할이 아직 없으므로 이 단계만 **로그인한 자격 증명**으로 실행한다.
+
+```bash
+export AWS_REGION=ap-northeast-2
+LOGIN=hannctl-login     # aws login 으로 받은 프로필. 아직 로그인 전이면: aws login --profile hannctl-login (브라우저 없는 원격 환경은 --remote 추가)
+# 이미 있으면 그대로 쓰고, 없을 때만 만든다 (약 1분, 비용 0원)
+aws cloudformation describe-stacks --stack-name hannctl-identity --profile "$LOGIN" >/dev/null 2>&1 && echo "hannctl-identity 있음 → 그대로 사용" \
+  || aws cloudformation deploy --stack-name hannctl-identity --template-file cfn/hannctl-identity.yaml \
+       --capabilities CAPABILITY_NAMED_IAM --profile "$LOGIN" \
+       --tags Project=hannctl hannctl:role=identity hannctl:est-usd-per-hour=0 hannctl:managed-by=hannctl-cli
+# 프로필 hannctl = "로그인 자격 증명으로 hannctl-operator-role 로 전환" (CLI 가 임시 자격 증명을 알아서 받고 갱신한다)
+ACCT=$(aws sts get-caller-identity --profile "$LOGIN" --query Account --output text)
+aws configure set role_arn "arn:aws:iam::$ACCT:role/hannctl-operator-role" --profile hannctl
+aws configure set source_profile "$LOGIN" --profile hannctl
+aws configure set role_session_name hannctl-cli --profile hannctl
+aws configure set region ap-northeast-2 --profile hannctl
+aws sts get-caller-identity --profile hannctl --query Arn --output text   # → arn:aws:sts::<계정>:assumed-role/hannctl-operator-role/hannctl-cli
+```
+
+> - **CloudShell** 은 이미 로그인되어 있다: `LOGIN` 줄과 `--profile "$LOGIN"` 을 빼고 실행하고, `source_profile` 줄 대신 `aws configure set credential_source EcsContainer --profile hannctl` 을 쓴다.
+> - **root 로 로그인했다면** 역할 전환이 되지 않는다(AWS 제한). 이때는 `./run.sh doctor` 를 실행해 콘솔 사용자 `hannctl-admin` 을 만들고 그 사용자로 다시 로그인한다.
+> - root 로그인 후 만든 **`hannctl-admin` 으로 로그인했다면** 이 스택은 이미 있고, `hannctl-admin` 에는 스택을 조회·생성할 권한이 없다. 스택을 조회·생성하는 `aws cloudformation …` 명령만 건너뛰고 나머지 줄은 그대로 실행한다.
+> - 역할을 만든 직후에는 전환이 몇 초 늦을 수 있다. 마지막 줄이 오류면 10초 뒤 다시 실행한다.
+
+**콘솔로 할 때**: CloudFormation → 스택 생성 → "템플릿 파일 업로드" → `cfn/hannctl-identity.yaml` → 스택 이름 `hannctl-identity` → 태그 `Project=hannctl`, `hannctl:role=identity` 추가 → "IAM 리소스 생성 승인" 체크. 프로필 설정(`ACCT=` 줄부터 끝까지)은 위와 같다.
 
 ### 6-1. 준비 — 내 정보 확인
 
 ```bash
-eval "$(./run.sh kubeconfig)"    # 작업용 역할 hannctl-operator-role 로 작업 (AWS_PROFILE=hannctl, 처음이면 먼저 ./run.sh doctor)
+eval "$(./run.sh kubeconfig)"    # 작업용 역할 hannctl-operator-role 로 작업 (AWS_PROFILE=hannctl — 6-0 에서 만든 프로필)
 export AWS_REGION=ap-northeast-2
-MY_ARN=$(aws sts get-caller-identity --query Arn --output text)   # 클러스터 관리자로 등록할 나 (= hannctl-operator-role)
+# 클러스터 관리자로 등록할 나 (= hannctl-operator-role). 임시 세션 ARN(…:sts::…:assumed-role/역할/세션)을 IAM 역할 ARN 으로 바꾼다
+MY_ARN=$(aws sts get-caller-identity --query Arn --output text | sed -E 's#:sts::([0-9]+):assumed-role/([^/]+)/.*#:iam::\1:role/\2#')
 MY_IP=$(curl -s https://checkip.amazonaws.com)/32                  # EKS API 에 접속을 허용할 내 IP
-echo "$MY_ARN  $MY_IP"
+echo "$MY_ARN  $MY_IP"     # → arn:aws:iam::<계정>:role/hannctl-operator-role  <내 IP>/32
 ```
 
-> assumed-role ARN(`arn:aws:sts::…:assumed-role/역할/세션`)이면 `arn:aws:iam::<계정>:role/역할` 형태로 바꿔서 쓴다.
+> - `aws sts get-caller-identity` 는 `arn:aws:sts::<계정>:assumed-role/hannctl-operator-role/hannctl-cli` 같은 **세션 ARN** 을 돌려준다. EKS Access Entry 에는 IAM 역할 ARN(`arn:aws:iam::<계정>:role/역할`)만 등록할 수 있어서 위 `sed` 로 바꾼다. `MY_ARN` 이 `arn:aws:sts::` 로 시작하면 6-3 의 스택 생성이 실패하므로 출력 형태를 확인한다.
+> - `eval "$(./run.sh kubeconfig)"` 는 프로필 `hannctl`(6-0 또는 `./run.sh doctor` 가 만든다)을 쓰게 한다. `The config profile (hannctl) could not be found` 가 나오면 6-0 을 먼저 한다.
 
-### 6-2. 공통 안전장치 스택 (계정에 한 번만)
+### 6-2. 공통 안전장치 스택 — `cfn/hannctl-finops-guard.yaml` (계정에 한 번만)
+
+`./run.sh demo`(또는 `up`)를 한 번이라도 실행했다면 이 스택은 이미 있다. 아래 첫 명령은 **스택이 없을 때만** 만들고, 있으면 그대로 둔다. 여러 시나리오가 함께 쓰는 공통 스택이라, 이미 있는 스택에 `deploy` 를 다시 실행하면 다른 실습의 자동 삭제·월 상한 설정까지 바뀔 수 있다.
 
 ```bash
+aws cloudformation describe-stacks --stack-name hannctl-finops-guard >/dev/null 2>&1 && echo "이미 있음 → 그대로 사용" || \
 aws cloudformation deploy --stack-name hannctl-finops-guard \
   --template-file cfn/hannctl-finops-guard.yaml --capabilities CAPABILITY_NAMED_IAM \
-  --tags Project=hannctl hannctl:role=guard
+  --tags Project=hannctl hannctl:role=guard hannctl:managed-by=hannctl-cli
 EXEC_ROLE=$(aws cloudformation describe-stacks --stack-name hannctl-finops-guard \
   --query "Stacks[0].Outputs[?OutputKey=='CfnExecRoleArn'].OutputValue" --output text)
+echo "$EXEC_ROLE"     # → arn:aws:iam::<계정>:role/hannctl-cfn-exec-role
 ```
 
-**콘솔로 할 때**: CloudFormation → 스택 생성 → "템플릿 파일 업로드" → `cfn/hannctl-finops-guard.yaml` → 스택 이름 `hannctl-finops-guard` → "IAM 리소스 생성 승인" 체크.
+`EXEC_ROLE` 에 `arn:aws:iam::<계정>:role/hannctl-cfn-exec-role` 이 들어 있어야 6-3 으로 넘어갈 수 있다(`echo "$EXEC_ROLE"` 로 확인). 비어 있으면 스택 생성이 아직 끝나지 않은 것이다.
+
+**콘솔로 할 때**(스택이 없을 때만): CloudFormation → 스택 생성 → "템플릿 파일 업로드" → `cfn/hannctl-finops-guard.yaml` → 스택 이름 `hannctl-finops-guard` → 태그 `Project=hannctl`, `hannctl:role=guard`, `hannctl:managed-by=hannctl-cli` 추가 → "IAM 리소스 생성 승인" 체크.
 
 ### 6-3. 시나리오 인프라 스택 — `cfn/stack.yaml`
 
@@ -326,7 +368,9 @@ aws cloudformation deploy --stack-name hannctl-s2-saas \
   --tags Project=hannctl hannctl:scenario=s2 hannctl:lifetime-hours=6 hannctl:est-usd-per-hour=0.21
 ```
 
-**콘솔로 할 때**: 템플릿 `cfn/stack.yaml` 업로드 → 스택 이름 `hannctl-s2-saas` → 파라미터 `DeployerPrincipalArn`, `EndpointAllowedCidr` 입력 → **"권한 – IAM 역할"에서 `hannctl-cfn-exec-role` 선택** → 태그 4개 추가 → 생성.
+`Waiting for stack create/update to complete` 가 나온 뒤 **약 12~13분** 동안 출력 없이 기다리다가 `Successfully created/updated stack - hannctl-s2-saas` 가 나오면 끝난 것이다. 실패하면 콘솔 CloudFormation → `hannctl-s2-saas` → **이벤트** 탭에서 `CREATE_FAILED` 줄의 이유를 확인하고, `./run.sh down` 으로 지운 뒤 다시 만든다.
+
+**콘솔로 할 때**: 템플릿 `cfn/stack.yaml` 업로드 → 스택 이름 `hannctl-s2-saas` → 파라미터 `DeployerPrincipalArn`(6-1 의 `MY_ARN`), `EndpointAllowedCidr`(6-1 의 `MY_IP`) 입력 → **"권한 – IAM 역할"에서 `hannctl-cfn-exec-role` 선택** → 태그 4개(`Project=hannctl`, `hannctl:scenario=s2`, `hannctl:lifetime-hours=6`, `hannctl:est-usd-per-hour=0.21`) 추가 → 생성.
 콘솔의 **이벤트** 탭에서 VPC → 서브넷 → NAT → EKS(약 10분) → 노드 그룹 → 애드온 순서로 만들어지는 것을 볼 수 있다.
 
 > 💡 실행 역할(`hannctl-cfn-exec-role`)을 지정해야 자동 삭제(janitor)와 `./run.sh down`이 이 스택을 지울 수 있다.
@@ -344,11 +388,14 @@ helm repo add kyverno https://kyverno.github.io/kyverno/ && helm repo update
 helm install kyverno kyverno/kyverno -n kyverno --create-namespace --version 3.9.2 --wait
 
 # 고객사 A/B 워크로드 (앱 코드는 ConfigMap 으로 주입)
-kubectl create namespace tenant-a; kubectl create namespace tenant-b
-kubectl -n tenant-a create configmap bizdesk-app --from-file=app/app.py
-kubectl -n tenant-b create configmap bizdesk-app --from-file=app/app.py
+#  --save-config: 뒤에서 kubectl apply 로 같은 리소스를 고칠 때 필요한 기록(last-applied)을 남긴다 (없으면 apply 때 Warning)
+kubectl create namespace tenant-a --save-config; kubectl create namespace tenant-b --save-config
+kubectl -n tenant-a create configmap bizdesk-app --from-file=app/app.py --save-config
+kubectl -n tenant-b create configmap bizdesk-app --from-file=app/app.py --save-config
 kubectl apply -f k8s/base/
-kubectl get pods -n tenant-a -o wide; kubectl get pods -n tenant-b -o wide
+kubectl -n tenant-a rollout status deploy/web; kubectl -n tenant-a rollout status deploy/api   # 준비될 때까지 대기 (보통 10~30초)
+kubectl -n tenant-b rollout status deploy/web; kubectl -n tenant-b rollout status deploy/api
+kubectl get pods -n tenant-a -o wide; kubectl get pods -n tenant-b -o wide                       # 4개 모두 1/1 Running
 
 # 테넌트 운영자 IAM Role 로 접속하는 컨텍스트 2개 (IAM Role → Access Entry → K8s 그룹)
 out() { aws cloudformation describe-stacks --stack-name hannctl-s2-saas --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text; }
@@ -367,25 +414,30 @@ kubectl -n tenant-a exec deploy/web -- python3 /app/app.py probe http://api.tena
 kubectl --context hannctl-s2-tenant-a auth can-i list pods -n tenant-b
 #  → yes   (A 운영자가 B 를 볼 수 있음 = 위험)
 kubectl apply -n tenant-a --dry-run=server -f k8s/attack/privileged-pod.yaml
-#  → created (server dry run)   (위험 Pod 허용 = 위험)
+#  → pod/hannctl-attack-privileged created (server dry run)   (위험 Pod 허용 = 위험)
+
+./run.sh test before     # 지금의 Before 상태를 자동 테스트 세트로 기록 (6-7 채점의 S2-03 Before 재현 근거)
 ```
+
+Before 상태를 채점용 테스트로도 기록해 둔다. `./run.sh test before` 는 클러스터 구성은 바꾸지 않고 **지금 상태 그대로** demo 와 같은 테스트를 실행해, 새 증적 폴더(`evidence/run-<시각>`, `evidence/latest` 가 이 폴더를 가리킨다)에 Before 결과를 기록한다. 이 기록이 있어야 6-7 채점의 "문제 재현(Before)" 항목과 보고서의 Before→After 비교가 채워진다.
 
 ### 6-6. AFTER — 통제를 하나씩 적용하고 바로 확인
 
 | 순서 | 적용 | 바로 확인 | 기대 결과 |
 |---|---|---|---|
-| ① | `kubectl apply -f k8s/after/10-default-deny.yaml` | 위 probe 명령을 A→A, A→B로 실행 | 둘 다 `BLOCKED` (정상 통신도 끊김!) |
-| ② | `kubectl apply -f k8s/after/20-allow-required.yaml` | A→A, A→B probe | A→A `200`, A→B `BLOCKED` |
+| ① | `kubectl apply -f k8s/after/10-default-deny.yaml` | A→A: `kubectl -n tenant-a exec deploy/web -- python3 /app/app.py probe http://api.tenant-a.svc.cluster.local/tenant`<br>A→B: 6-5 의 probe 명령 그대로 | 둘 다 `BLOCKED` (정상 통신도 끊김!) |
+| ② | `kubectl apply -f k8s/after/20-allow-required.yaml` | ①과 같은 A→A, A→B probe | A→A `200`, A→B `BLOCKED` |
 | ③ | `kubectl delete -f k8s/before/legacy-rbac.yaml`<br>`kubectl apply -f k8s/after/30-tenant-rbac.yaml` | `kubectl --context hannctl-s2-tenant-a auth can-i list pods -n tenant-b` | `no` |
-| ④ | `kubectl label ns tenant-a tenant-b pod-security.kubernetes.io/enforce=restricted hannctl.io/protected=true`<br>`kubectl apply -f k8s/policies/kyverno-baseline.yaml` | privileged Pod dry-run | `Error … violates PodSecurity` 또는 Kyverno 거부 |
+| ④ | `kubectl label ns tenant-a tenant-b pod-security.kubernetes.io/enforce=restricted hannctl.io/protected=true`<br>`kubectl apply -f k8s/policies/kyverno-baseline.yaml` | `kubectl apply -n tenant-a --dry-run=server -f k8s/attack/privileged-pod.yaml` | `Error from server (Forbidden): … violates PodSecurity "restricted:latest"` (PSA 가 먼저 거부) |
 
 ### 6-7. 검증 · 채점 · 삭제는 그대로 자동으로
 
 ```bash
-./run.sh test after      # Before 와 같은 테스트 세트 실행
-./run.sh score           # 평가표 채점 + REPORT.html
-./run.sh down            # 삭제 (또는 콘솔에서 스택 삭제 — 이 경우 실행 역할이 자동으로 쓰인다)
+./run.sh test after && ./run.sh score   # Before 와 같은 테스트 세트 실행 → 평가표 채점 + REPORT.md / REPORT.html (100점 만점, 88점 이상 PASS)
+./run.sh down            # 삭제 약 8~10분 (또는 콘솔에서 스택 삭제 — 이 경우 실행 역할이 자동으로 쓰인다)
 ```
+
+> `./run.sh test after` 는 클러스터 구성을 바꾸지 않고 **직접 구성한 상태 그대로** Before 와 같은 테스트를 실행해, 가장 최근 증적 폴더(6-5 의 `test before` 가 만든 폴더)에 이어 기록한다. 그래서 `score` 가 Before·After 를 함께 채점한다. 6-5 의 `test before` 를 건너뛰면 Before 항목이 채워지지 않는다.
 
 ---
 
@@ -426,6 +478,16 @@ s2-saas-tenant-isolation/
 └── evidence/                 # 실행할 때마다 생성: results.jsonl, REPORT.md/html, before/, after/ 증적
 ```
 
+**`cfn/` 템플릿 3개의 관계**
+
+| 템플릿 | 만드는 스택 → 주요 리소스 | 언제 만들어지나 |
+|---|---|---|
+| `hannctl-identity.yaml` | `hannctl-identity` → 작업용 역할 `hannctl-operator-role` (+root 로 로그인했을 때 콘솔 사용자 `hannctl-admin`) | `run.sh` 첫 실행 때 자동 (손으로는 6-0) |
+| `hannctl-finops-guard.yaml` | `hannctl-finops-guard` → 자동 삭제 Lambda `hannctl-janitor`, 월 예산, CloudFormation 실행 역할 `hannctl-cfn-exec-role` | 첫 `demo`/`up` 때 자동 (손으로는 6-2) |
+| `stack.yaml` | `hannctl-s2-saas` → 이 시나리오의 실습 인프라 전부. `hannctl-cfn-exec-role` 로 배포되므로 guard 스택이 먼저 있어야 한다 | `demo`/`up` 때 자동 (손으로는 6-3) |
+
+> 앞의 두 스택은 계정에 하나씩만 있고 모든 시나리오가 함께 쓴다(비용 0원 수준). `./run.sh down` 은 시나리오 스택만 지우고, 공용 스택은 `./run.sh down-all`(guard) / `./run.sh down-all --identity`(identity 까지)로 지운다(9-2 참고).
+
 ---
 
 ## 9. 비용, 안전장치, 삭제 (FinOps)
@@ -442,7 +504,7 @@ s2-saas-tenant-isolation/
 
 | 사용 형태 | 예상 비용 |
 |---|---|
-| `demo` 1회 (생성 ~15분 + 진행 ~10분 + 삭제) | **≈ $0.15 (≈ 200원)** — 실제 값은 매 실행 `REPORT.html` 의 "비용" 섹션 |
+| `demo` 1회 (생성 ~12분 + 진행 ~5분 + 삭제 ~8분) | **≈ $0.09 (≈ 130원)** — 실제 값은 매 실행 `REPORT.html` 의 "비용" 섹션 |
 | 1시간 실습 | ≈ $0.21 (≈ 290원) |
 | 깜빡 잊고 방치 | 처음 정한 유지 시간(기본 **6시간**) 후 자동 삭제 → **최대 ≈ $1.26 (≈ 1,800원)** |
 
@@ -461,8 +523,9 @@ s2-saas-tenant-isolation/
 |---|---|
 | `./run.sh lifetime 9` | 유지 시간 변경 — **만든 시각부터** 9시간 (예: 6시간 중 4시간 지난 뒤 → 남은 5시간). `0` = 무제한 |
 | `./run.sh cap 0` / `cap 20` | 월 비용 상한 끄기 / 다시 켜기 (자세한 내용: [START_HERE.md 7단계](START_HERE.md#7단계선택-자동-삭제비용-상한을-끄고-싶다면)) |
-| `./run.sh down` | 스택 삭제 + 잔여 리소스 확인 (10~15분, 삭제되는 과정이 화면에 보임) |
+| `./run.sh down` | 스택 삭제 + 잔여 리소스 확인 (약 8~10분, 삭제되는 과정이 화면에 보임) |
 | `./run.sh down-all` | 공통 안전장치(janitor·예산)까지 삭제 (다른 hannctl 스택이 없을 때만) |
+| `./run.sh down-all --identity` | 위에 더해 작업용 역할(`hannctl-identity` 스택)까지 삭제 |
 
 **hannctl 식별자 규칙**: 이 시나리오가 AWS에 만드는 모든 리소스는 이름이 `hannctl-`로 시작하거나 `Project=hannctl` 태그를 가진다. After 테스트의 `tag_compliance` 항목이 이를 자동으로 검사한다.
 AWS가 자동으로 만드는 일부 하위 리소스(EKS 노드 인스턴스 프로파일 `eks-…`, 서비스 연결 역할 `AWSServiceRoleFor…`)는 이름을 정할 수 없지만, 클러스터·노드 그룹과 함께 생성되고 삭제된다.

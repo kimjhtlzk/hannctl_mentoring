@@ -1,6 +1,7 @@
-# 시나리오 1 · 쇼핑몰의 안전한 배포·장애 대응 (ShopNow)
+# 시나리오 1 · 쇼핑몰의 안전한 배포·장애 대응 (ShopNow) — 해설서
 
-> 🚀 **처음이라면 → [START_HERE.md](START_HERE.md)** (내려받기 → 준비 → `./run.sh doctor` → `./run.sh demo` → 삭제)
+> ▶ **실습은 [GUIDE.md](GUIDE.md) 하나만 보고 따라간다** (내려받기·준비도 GUIDE.md 0단계에 있다).
+> 이 문서는 시나리오의 배경·원리·직접 구성 방법·발표 포인트를 담은 해설서다.
 
 > **한 줄 요약**
 > 할인 행사로 트래픽이 몰려도 **Pod와 노드가 자동으로 늘어나고**, 버그 있는 새 버전을 배포해도 **고객은 장애를 겪지 않으며**(바로 롤백), 취약한 이미지와 위험한 Pod는 **배포 전에 차단**되는 쇼핑몰 운영 체계를 만든다.
@@ -10,10 +11,11 @@
 |---|---|
 | 난이도 | ★★★☆☆ (3/5) — 운영(확장·배포·복구)과 보안(이미지·Pod 정책)을 균형 있게 |
 | 핵심 기술 | Amazon EKS, **HPA**, **Cluster Autoscaler**(EKS Pod Identity), **Readiness/Liveness Probe**, 롤링 업데이트·**롤백**, **CodeBuild + Trivy** CI 게이트, **ECR**, PSA·**Kyverno**, **Prometheus/Grafana** |
-| 소요 시간 | 처음 `demo` 약 45분(인프라 15분 + 설치 8분 포함), 이후 재실행 약 20분 |
-| 예상 비용 | 약 **$0.25/시간(≈350원)**, demo 1회(생성~삭제 약 45분) 약 **$0.2(≈280원)** — 자세한 내용은 [9장](#9-비용-안전장치-삭제-finops) |
+| 소요 시간 | 처음 `demo` 약 30분(인프라 약 14분 + 설치 약 3분 + Before→After 진행 약 12분), 인프라가 이미 있으면 약 15분, 삭제(`down`) 약 9분 |
+| 예상 비용 | 약 **$0.25/시간(≈350원)**, demo 1회(생성~삭제 약 40분) 약 **$0.15~0.2(≈210~280원)** — 자세한 내용은 [9장](#9-비용-안전장치-삭제-finops) |
 | 과정 요구사항 연결 | 인프라 운영(노드 오토스케일링, Prometheus/Grafana, 장애 대응), 공급망 보안(Trivy, Critical·High 차단), 정책 통제(privileged/root/hostPath 차단) |
 
+---
 
 ## 🎯 이 시나리오의 초점 (먼저 읽기)
 
@@ -58,8 +60,9 @@ cd s1-shop-deploy-resilience
 ./run.sh down                      # 끝나면 전부 삭제 (잊어도 정한 유지 시간이 지나면 자동 삭제)
 ```
 
-`demo`가 끝나면 `evidence/latest/REPORT.html`이 열린다. 점수, Before→After 비교, 전환 타임라인을 한 화면에서 볼 수 있다.
-**다른 터미널에서 `./run.sh watch`** 를 켜 두면 HPA 목표값, Pod, 노드 수가 바뀌는 모습을 실시간으로 볼 수 있다.
+`demo`가 끝나면 `evidence/latest/REPORT.html`이 열린다(열리지 않으면 [START_HERE.md](START_HERE.md) 5단계 참고). 점수, Before→After 비교, 전환 타임라인을 한 화면에서 볼 수 있다.
+**다른 터미널에서 `./run.sh watch`** 를 켜 두면 HPA 목표값, Pod, 노드 수가 바뀌는 모습을 실시간으로 볼 수 있다(새 터미널에서도 이 폴더로 `cd` 한 뒤 실행).
+> `demo` 를 시작하자마자 켜도 된다. 클러스터가 만들어지는 동안(약 10~15분)은 `⏳ EKS 클러스터 hannctl-s1-shop 준비 대기 중` 화면이 15초마다 갱신되고, 클러스터가 준비되면 자동으로 관찰 화면으로 바뀐다. 끝낼 때는 `Ctrl+C`. `./run.sh grafana` 도 같은 방법으로 다른 터미널에서 실행한다.
 
 > 처음 한 번 필요한 것: 내 AWS 계정에 관리자로 콘솔 로그인할 수 있으면 된다. 처음 실행할 때 브라우저 로그인으로 임시 자격 증명을 받고, 작업용 역할 `hannctl-operator-role` 이 자동으로 만들어진다(Access Key·`aws configure` 불필요). python3·AWS CLI·kubectl·helm 등은 **없는 것만 자동 설치**된다. 자세한 준비는 [START_HERE.md](START_HERE.md) 참고.
 > **로컬 Docker 불필요**: 이미지 빌드는 AWS CodeBuild에서 한다. macOS, Ubuntu, CentOS/Rocky, AWS CloudShell에서 동작한다.
@@ -236,7 +239,7 @@ sequenceDiagram
 
 ### 4-2. Before → After 결과표 (동일 테스트)
 
-| 테스트 | Before | After | 검증 실행 실측값 (2026-11, 온디맨드, 100/100점) | 의미 |
+| 테스트 | Before | After | 실측값 예시 (2026-11, 온디맨드, 100/100점) | 의미 |
 |---|---|---|---|---|
 | 부하 시 Pod 수 | FIXED (2) | **SCALED** | Pod 2 고정 → **2→4→8** (부하 시작 30초·50초 후) | 트래픽에 맞춰 처리 능력 자동 증가 |
 | 부하 시 노드 수 | – | **SCALED** | 노드 **1→2** (Pending 발생 후 약 50초 만에 새 노드 Ready) | Pending Pod를 위해 노드 자동 추가 |
@@ -251,7 +254,7 @@ sequenceDiagram
 > 수치는 실행할 때마다 조금씩 다르다. 매 실행의 `evidence/<run>/REPORT.md`에 기록되며, 발표에는 **자기 조가 측정한 값만** 사용한다.
 > p95가 크게 줄지 않는 이유: 부하 발생기(파이썬 1개 프로세스)가 먼저 한계에 닿기 때문이다. 이 시나리오에서는 **처리량(rps)** 이 확장 효과를 더 잘 보여준다.
 >
-> 💡 **실제 검증에서 얻은 교훈**: 처음에는 공식 `python:3.13-alpine` 베이스 이미지로 만든 **정상 이미지도 게이트에서 차단**되었다(pip 내부 라이브러리 msgpack·urllib3·setuptools의 HIGH 취약점 5건). 실행에 필요 없는 pip를 이미지에서 지우자(`app/Dockerfile`) 통과했다. "공식 이미지 = 안전"이 아니며, **필요 없는 것을 빼는 것**도 공급망 보안이다.
+> 💡 **배울 점 — 공식 이미지도 그대로는 통과하지 못한다**: 공식 `python:3.13-alpine` 베이스 이미지를 그대로 쓰면 **정상 이미지도 게이트에서 차단**된다(pip 내부 라이브러리 msgpack·urllib3·setuptools의 HIGH 취약점 5건). 그래서 `app/Dockerfile` 은 실행에 필요 없는 pip를 이미지에서 지운다. "공식 이미지 = 안전"이 아니며, **필요 없는 것을 빼는 것**도 공급망 보안이다.
 
 ---
 
@@ -269,7 +272,7 @@ eval "$(./run.sh kubeconfig)"        # 이 시나리오 전용 kubeconfig (내 ~
 | 4 | 직접 부하 주기 | `kubectl -n shop-loadtest exec deploy/loadgen -- python3 /app/app.py load http://shop-api.shop.svc.cluster.local/products 60 16` |
 | 5 | 노드 확장 로그 | `kubectl -n kube-system logs deploy/cluster-autoscaler --tail=30` |
 | 6 | 엔드포인트(트래픽 받는 Pod) | `kubectl -n shop get endpointslices -l kubernetes.io/service-name=shop-api -o wide` |
-| 7 | 배포 이력·롤백 | `kubectl -n shop rollout history deploy/shop-api` / `kubectl -n shop rollout undo deploy/shop-api` |
+| 7 | 배포 이력·롤백 직접 해보기 | `kubectl -n shop rollout history deploy/shop-api`<br>→ 버그 버전 배포: `kubectl -n shop set image deploy/shop-api app=$(aws ecr describe-repositories --repository-names hannctl-s1-shop-api --query 'repositories[0].repositoryUri' --output text):v2-bad`<br>→ `kubectl -n shop get pods` (새 Pod 가 `0/1` 로 남고 기존 v1 Pod 가 계속 서비스)<br>→ 롤백: `kubectl -n shop rollout undo deploy/shop-api` |
 | 8 | 현재 버전 | `kubectl -n shop-loadtest exec deploy/loadgen -- python3 /app/app.py get http://shop-api.shop.svc.cluster.local/version` |
 | 9 | CI 빌드 기록 | `aws codebuild list-builds-for-project --project-name hannctl-s1-ci` → 콘솔에서 로그(Trivy 표) 확인 |
 | 10 | ECR 이미지·스캔 | `aws ecr describe-images --repository-name hannctl-s1-shop-api` |
@@ -277,37 +280,79 @@ eval "$(./run.sh kubeconfig)"        # 이 시나리오 전용 kubeconfig (내 ~
 | 12 | Kyverno 정책 | `kubectl get validatingpolicy` / `kubectl describe validatingpolicy hannctl-disallow-privileged` |
 | 13 | Grafana | `./run.sh grafana` → Dashboards → *Kubernetes / Compute Resources / Namespace (Pods)* → namespace `shop` |
 
+> `rollout undo` 는 **바로 이전 리비전**으로 되돌린다. `demo` 가 끝난 직후에는 바로 이전 리비전이 v2-bad(버그 버전)이므로, 7번처럼 버그 버전을 먼저 배포한 뒤에 undo 해야 v1 로 돌아온다. 지금 무엇이 배포되어 있는지는 8번으로 확인한다.
+
 ---
 
 ## 6. run.sh 없이 처음부터 직접 구성해 보기 (원리 이해용)
 
 `run.sh`는 아래 과정을 **순서대로 대신 실행**해 주는 스크립트일 뿐이다. 한 번은 손으로 따라 해 보면 "CloudFormation이 무엇을 만들고, CI·Kubernetes 설정이 그 위에 어떻게 올라가는지"가 확실히 보인다.
 
-> 직접 만든 환경도 `./run.sh test after`, `./run.sh score`, `./run.sh down`으로 그대로 검증·채점·삭제할 수 있다(스택 이름과 태그만 같게 만들면 된다).
+> 직접 만든 환경도 `./run.sh test before`, `./run.sh test after`, `./run.sh score`, `./run.sh down`으로 그대로 검증·채점·삭제할 수 있다(스택 이름과 태그만 같게 만들면 된다).
+> 6절의 명령은 모두 **이 시나리오 폴더에서, 한 터미널로 순서대로** 실행한다. 앞에서 만든 변수·함수(`MY_ARN`, `EXEC_ROLE` 등)를 뒤에서 그대로 쓰기 때문이다. 터미널을 새로 열었다면 6-1·6-2 를 다시 실행하고(6-2 는 스택이 이미 있으면 `EXEC_ROLE` 만 다시 읽는다), 그 뒤 절에서 만든 변수·함수 정의 줄도 다시 실행한다.
+> macOS 의 zsh 라면 먼저 `setopt interactivecomments` 를 실행한다(명령 뒤 `# 설명` 주석 때문, [START_HERE.md](START_HERE.md) 맨 위 참고).
+
+### 6-0. 작업용 역할 스택 — `cfn/hannctl-identity.yaml` (계정에 한 번만)
+
+`run.sh` 는 처음 실행할 때 이 스택을 자동으로 만든다(`./run.sh doctor` 를 이미 했다면 있으므로 건너뛰어도 된다).
+이 스택이 만드는 IAM 역할 `hannctl-operator-role` 이 이후 모든 작업의 권한이 된다. 역할이 아직 없으므로 이 단계만 **로그인한 자격 증명**으로 실행한다.
+
+```bash
+export AWS_REGION=ap-northeast-2
+LOGIN=hannctl-login     # aws login 으로 받은 프로필. 아직 로그인 전이면: aws login --profile hannctl-login (브라우저 없는 원격 환경은 --remote 추가)
+# 이미 있으면 그대로 쓰고, 없을 때만 만든다 (약 1분, 비용 0원)
+aws cloudformation describe-stacks --stack-name hannctl-identity --profile "$LOGIN" >/dev/null 2>&1 && echo "hannctl-identity 있음 → 그대로 사용" \
+  || aws cloudformation deploy --stack-name hannctl-identity --template-file cfn/hannctl-identity.yaml \
+       --capabilities CAPABILITY_NAMED_IAM --profile "$LOGIN" \
+       --tags Project=hannctl hannctl:role=identity hannctl:est-usd-per-hour=0 hannctl:managed-by=hannctl-cli
+# 프로필 hannctl = "로그인 자격 증명으로 hannctl-operator-role 로 전환" (CLI 가 임시 자격 증명을 알아서 받고 갱신한다)
+ACCT=$(aws sts get-caller-identity --profile "$LOGIN" --query Account --output text)
+aws configure set role_arn "arn:aws:iam::$ACCT:role/hannctl-operator-role" --profile hannctl
+aws configure set source_profile "$LOGIN" --profile hannctl
+aws configure set role_session_name hannctl-cli --profile hannctl
+aws configure set region ap-northeast-2 --profile hannctl
+aws sts get-caller-identity --profile hannctl --query Arn --output text   # → arn:aws:sts::<계정>:assumed-role/hannctl-operator-role/hannctl-cli
+```
+
+> - **CloudShell** 은 이미 로그인되어 있다: `LOGIN` 줄과 `--profile "$LOGIN"` 을 빼고 실행하고, `source_profile` 줄 대신 `aws configure set credential_source EcsContainer --profile hannctl` 을 쓴다.
+> - **root 로 로그인했다면** 역할 전환이 되지 않는다(AWS 제한). 이때는 `./run.sh doctor` 를 실행해 콘솔 사용자 `hannctl-admin` 을 만들고 그 사용자로 다시 로그인한다.
+> - root 로그인 후 만든 **`hannctl-admin` 으로 로그인했다면** 이 스택은 이미 있고, `hannctl-admin` 에는 스택을 조회·생성할 권한이 없다. 스택을 조회·생성하는 `aws cloudformation …` 명령만 건너뛰고 나머지 줄은 그대로 실행한다.
+> - 역할을 만든 직후에는 전환이 몇 초 늦을 수 있다. 마지막 줄이 오류면 10초 뒤 다시 실행한다.
+
+**콘솔로 할 때**: CloudFormation → 스택 생성 → "템플릿 파일 업로드" → `cfn/hannctl-identity.yaml` → 스택 이름 `hannctl-identity` → 태그 `Project=hannctl`, `hannctl:role=identity` 추가 → "IAM 리소스 생성 승인" 체크. 프로필 설정(`ACCT=` 줄부터 끝까지)은 위와 같다.
 
 ### 6-1. 준비 — 내 정보 확인
 
 ```bash
-eval "$(./run.sh kubeconfig)"    # 작업용 역할 hannctl-operator-role 로 작업 (AWS_PROFILE=hannctl, 처음이면 먼저 ./run.sh doctor)
-export AWS_REGION=ap-northeast-2
-MY_ARN=$(aws sts get-caller-identity --query Arn --output text)   # 클러스터 관리자로 등록할 나 (= hannctl-operator-role)
+eval "$(./run.sh kubeconfig)"    # 작업용 역할 hannctl-operator-role 로 작업 (AWS_PROFILE=hannctl — 6-0 에서 만든 프로필)
+export AWS_REGION=ap-northeast-2 AWS_PAGER=""   # AWS_PAGER="" : 긴 출력이 less 화면으로 넘어가지 않고 바로 출력되게
+# 클러스터 관리자로 등록할 나 (= hannctl-operator-role). 세션 ARN 을 IAM 역할 ARN 으로 바꿔 둔다
+MY_ARN=$(aws sts get-caller-identity --query Arn --output text | sed -E 's#:sts::([0-9]+):assumed-role/([^/]+)/.*#:iam::\1:role/\2#')
 MY_IP=$(curl -s https://checkip.amazonaws.com)/32                  # EKS API 에 접속을 허용할 내 IP
-echo "$MY_ARN  $MY_IP"
+echo "$MY_ARN  $MY_IP"      # arn:aws:iam::<계정>:role/hannctl-operator-role  <내 IP>/32
 ```
 
-> assumed-role ARN(`arn:aws:sts::…:assumed-role/역할/세션`)이면 `arn:aws:iam::<계정>:role/역할` 형태로 바꿔서 쓴다.
+> - `aws sts get-caller-identity` 는 `arn:aws:sts::<계정>:assumed-role/hannctl-operator-role/hannctl-cli` 같은 **세션 ARN** 을 돌려준다. EKS Access Entry 에는 IAM 역할 ARN(`arn:aws:iam::<계정>:role/역할`)만 등록할 수 있어서 위 `sed` 로 바꾼다. `MY_ARN` 이 `arn:aws:sts::` 로 시작하면 6-3 의 스택 생성이 실패하므로 출력 형태를 확인한다.
+> - `eval "$(./run.sh kubeconfig)"` 는 프로필 `hannctl`(6-0 또는 `./run.sh doctor` 가 만든다)을 쓰게 한다. `The config profile (hannctl) could not be found` 가 나오면 6-0 을 먼저 한다.
 
-### 6-2. 공통 안전장치 스택 (계정에 한 번만)
+### 6-2. 공통 안전장치 스택 — `cfn/hannctl-finops-guard.yaml` (계정에 한 번만)
+
+`./run.sh demo`(또는 `up`)를 한 번이라도 실행했다면 이 스택은 이미 있다. 아래 첫 명령은 **스택이 없을 때만** 만들고, 있으면 그대로 둔다. 여러 시나리오가 함께 쓰는 공통 스택이라, 이미 있는 스택에 `deploy` 를 다시 실행하면 다른 실습의 자동 삭제·월 상한 설정까지 바뀔 수 있다.
 
 ```bash
+# 이미 있으면(다른 시나리오나 ./run.sh demo 로 만든 적이 있으면) 그대로 두고 건너뛴다
+aws cloudformation describe-stacks --stack-name hannctl-finops-guard >/dev/null 2>&1 && echo "guard 스택 있음 → 건너뜀" || \
 aws cloudformation deploy --stack-name hannctl-finops-guard \
   --template-file cfn/hannctl-finops-guard.yaml --capabilities CAPABILITY_NAMED_IAM \
-  --tags Project=hannctl hannctl:role=guard
+  --tags Project=hannctl hannctl:role=guard hannctl:managed-by=hannctl-cli
 EXEC_ROLE=$(aws cloudformation describe-stacks --stack-name hannctl-finops-guard \
   --query "Stacks[0].Outputs[?OutputKey=='CfnExecRoleArn'].OutputValue" --output text)
+echo "$EXEC_ROLE"     # → arn:aws:iam::<계정>:role/hannctl-cfn-exec-role
 ```
 
-**콘솔로 할 때**: CloudFormation → 스택 생성 → "템플릿 파일 업로드" → `cfn/hannctl-finops-guard.yaml` → 스택 이름 `hannctl-finops-guard` → "IAM 리소스 생성 승인" 체크.
+`EXEC_ROLE` 에 `arn:aws:iam::<계정>:role/hannctl-cfn-exec-role` 이 들어 있어야 6-3 으로 넘어갈 수 있다(`echo "$EXEC_ROLE"` 로 확인). 비어 있으면 스택 생성이 아직 끝나지 않은 것이다.
+
+**콘솔로 할 때**(스택이 없을 때만): CloudFormation → 스택 생성 → "템플릿 파일 업로드" → `cfn/hannctl-finops-guard.yaml` → 스택 이름 `hannctl-finops-guard` → 태그 `Project=hannctl`, `hannctl:role=guard`, `hannctl:managed-by=hannctl-cli` 추가 → "IAM 리소스 생성 승인" 체크.
 
 ### 6-3. 시나리오 인프라 스택 — `cfn/stack.yaml`
 
@@ -320,7 +365,9 @@ aws cloudformation deploy --stack-name hannctl-s1-shop \
   --tags Project=hannctl hannctl:scenario=s1 hannctl:lifetime-hours=6 hannctl:est-usd-per-hour=0.25
 ```
 
-**콘솔로 할 때**: 템플릿 `cfn/stack.yaml` 업로드 → 스택 이름 `hannctl-s1-shop` → 파라미터 `DeployerPrincipalArn`, `EndpointAllowedCidr` 입력(`CiSecurityGate`는 `off`) → **"권한 – IAM 역할"에서 `hannctl-cfn-exec-role` 선택** → 태그 4개 추가 → 생성.
+`Waiting for stack create/update to complete` 가 나온 뒤 **약 15분** 동안 출력 없이 기다리다가 `Successfully created/updated stack - hannctl-s1-shop` 가 나오면 끝난 것이다. 실패하면 콘솔 CloudFormation → `hannctl-s1-shop` → **이벤트** 탭에서 `CREATE_FAILED` 줄의 이유를 확인하고, `./run.sh down` 으로 지운 뒤 다시 만든다.
+
+**콘솔로 할 때**: 템플릿 `cfn/stack.yaml` 업로드 → 스택 이름 `hannctl-s1-shop` → 파라미터 `DeployerPrincipalArn`(6-1 의 `MY_ARN`), `EndpointAllowedCidr`(6-1 의 `MY_IP`) 입력(`CiSecurityGate`는 `off`) → **"권한 – IAM 역할"에서 `hannctl-cfn-exec-role` 선택** → 태그 4개(`Project=hannctl`, `hannctl:scenario=s1`, `hannctl:lifetime-hours=6`, `hannctl:est-usd-per-hour=0.25`) 추가 → 생성.
 콘솔 **이벤트** 탭에서 VPC → NAT → ECR/S3/CodeBuild → EKS(약 10분) → 노드 그룹 → 애드온 순서로 만들어지는 것을 볼 수 있다.
 
 > 💡 실행 역할(`hannctl-cfn-exec-role`)을 지정해야 자동 삭제(janitor)와 `./run.sh down`이 이 스택을 지울 수 있다.
@@ -333,13 +380,16 @@ out() { aws cloudformation describe-stacks --stack-name hannctl-s1-shop --query 
 REPO=$(out EcrRepoUri); BUCKET=$(out SourceBucket)
 
 # (1) 소스(app/) 를 zip 으로 S3 에 올리고 CodeBuild 로 빌드 → ECR push
-(cd app && python3 -c "import zipfile,os;z=zipfile.ZipFile('/tmp/source.zip','w');[z.write(f) for f in os.listdir('.')]")
-aws s3 cp /tmp/source.zip s3://$BUCKET/source.zip
-aws codebuild start-build --project-name hannctl-s1-ci \
+mkdir -p .build    # 임시 파일 폴더 (git 에 올라가지 않음)
+(cd app && python3 -c "import zipfile,os;z=zipfile.ZipFile('../.build/source.zip','w');[z.write(f) for f in os.listdir('.')]")
+aws s3 cp .build/source.zip s3://$BUCKET/source.zip
+aws codebuild start-build --project-name hannctl-s1-ci --query build.id --output text \
   --environment-variables-override name=IMAGE_TAG,value=v1 name=VARIANT,value=secure name=FAIL_MODE,value=0
-aws codebuild start-build --project-name hannctl-s1-ci \
+aws codebuild start-build --project-name hannctl-s1-ci --query build.id --output text \
   --environment-variables-override name=IMAGE_TAG,value=v2-bad name=VARIANT,value=secure name=FAIL_MODE,value=1
-aws codebuild list-builds-for-project --project-name hannctl-s1-ci     # 진행 상황 (콘솔: CodeBuild → hannctl-s1-ci)
+# 위 두 줄은 빌드 ID 를 출력한다. 진행 상황은 콘솔 CodeBuild → hannctl-s1-ci 에서 본다
+# 빌드는 1분 정도 걸린다. 두 이미지가 ECR 에 들어올 때까지 기다린다
+until aws ecr describe-images --repository-name hannctl-s1-shop-api --image-ids imageTag=v1 imageTag=v2-bad >/dev/null 2>&1; do sleep 15; done
 aws ecr describe-images --repository-name hannctl-s1-shop-api --query 'imageDetails[].imageTags'   # v1, v2-bad
 
 # (2) EKS 접속 — 이 폴더 전용 kubeconfig (내 기본 kubeconfig 는 건드리지 않는다)
@@ -349,8 +399,13 @@ kubectl get nodes                                      # 노드 1대 Ready
 
 # (3) 정책 엔진 + 모니터링 설치
 helm repo add kyverno https://kyverno.github.io/kyverno/
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts && helm repo update
-helm install kyverno kyverno/kyverno -n kyverno --create-namespace --version 3.9.2 --wait
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo add autoscaler https://kubernetes.github.io/autoscaler      # 6-6 ④ Cluster Autoscaler 용
+helm repo update
+# 노드 1대(2 vCPU)에 맞춘 경량 설정: 각 컨트롤러 1개, 이 실습에서 쓰지 않는 cleanup 컨트롤러·PolicyException 은 끈다
+helm install kyverno kyverno/kyverno -n kyverno --create-namespace --version 3.9.2 \
+  --set admissionController.replicas=1 --set backgroundController.replicas=1 --set reportsController.replicas=1 \
+  --set cleanupController.enabled=false --set features.policyExceptions.enabled=false --wait
 helm install kps prometheus-community/kube-prometheus-stack -n monitoring --create-namespace \
   --version 93.2.0 -f k8s/monitoring-values.yaml --set fullnameOverride=kps --wait
 
@@ -358,48 +413,112 @@ helm install kps prometheus-community/kube-prometheus-stack -n monitoring --crea
 kubectl apply -f k8s/base/shop.yaml
 kubectl -n shop-loadtest create configmap shop-app --from-file=app/app.py
 sed "s#__IMAGE__#$REPO:v1#" k8s/before/shop-api.yaml | kubectl apply -f -
-kubectl -n shop get pods -o wide
+kubectl -n shop rollout status deploy/shop-api; kubectl -n shop-loadtest rollout status deploy/loadgen   # 둘 다 준비될 때까지 대기
+kubectl -n shop get pods -o wide                       # shop-api 2개 Running
 ```
 
 ### 6-5. BEFORE — 위험 재현
 
 ```bash
 SVC=http://shop-api.shop.svc.cluster.local
-LG="kubectl -n shop-loadtest exec deploy/loadgen -- python3 /app/app.py"
+lg() { kubectl -n shop-loadtest exec deploy/loadgen -- python3 /app/app.py "$@"; }   # 부하 발생기 Pod 안에서 실행 (bash·zsh 공통)
 
-$LG load $SVC/products 60 16                  # 부하 60초
+lg load $SVC/products 60 16                   # 부하 60초
 #  → {"requests": …, "success_rate": 100.0, "p95_ms": …}   그동안 kubectl -n shop get pods → 계속 2개 (고정)
 
-kubectl -n shop set image deploy/shop-api app=$REPO:v2-bad   # 버그 버전 배포
-$LG load $SVC/products 30 4
+lg load $SVC/products 45 4 &                  # 부하를 먼저 걸어 두고 (45초, 백그라운드)
+sleep 5; kubectl -n shop set image deploy/shop-api app=$REPO:v2-bad   # 그 사이에 버그 버전 배포
+wait
 #  → success_rate 가 크게 떨어짐 (Probe 가 없어 500 을 내는 Pod 가 트래픽을 받음)
+kubectl -n shop get pods                                     # v2-bad Pod 가 1/1 Running (500 을 내는데도 "정상"으로 보임)
 kubectl -n shop rollout undo deploy/shop-api                 # 수동 롤백
+kubectl -n shop rollout status deploy/shop-api               # 롤백이 끝날 때까지 대기 (Probe 가 없어 약 1분)
 
-aws codebuild start-build --project-name hannctl-s1-ci \
+aws codebuild start-build --project-name hannctl-s1-ci --query build.id --output text \
   --environment-variables-override name=IMAGE_TAG,value=vuln name=VARIANT,value=vuln name=FAIL_MODE,value=0
-#  → SUCCEEDED, ECR 에 vuln 태그가 생김 (게이트 OFF: 취약 이미지 유입)
+until aws ecr describe-images --repository-name hannctl-s1-shop-api --image-ids imageTag=vuln >/dev/null 2>&1; do sleep 15; done
+#  → 약 1분 뒤 ECR 에 vuln 태그가 생김 (게이트 OFF: 검사 없이 취약 이미지 유입)
 
 kubectl apply -n shop --dry-run=server -f k8s/attack/privileged-pod.yaml
 #  → pod/hannctl-attack-privileged created (server dry run)   (위험 Pod 허용)
+
+./run.sh test before     # 지금의 Before 상태를 자동 테스트 세트로 기록 (6-7 채점의 S1-03 Before 재현 근거)
 ```
+
+Before 상태를 채점용 테스트로도 기록해 둔다. `./run.sh test before` 는 클러스터 구성은 바꾸지 않고 **지금 상태 그대로** demo 와 같은 테스트를 실행해, 새 증적 폴더(`evidence/run-<시각>`, `evidence/latest` 가 이 폴더를 가리킨다)에 Before 결과를 기록한다. 이 기록이 있어야 6-7 채점의 "문제 재현(Before)" 항목과 보고서의 Before→After 비교가 채워진다.
 
 ### 6-6. AFTER — 통제를 하나씩 적용하고 바로 확인
 
-| 순서 | 적용 | 바로 확인 | 기대 결과 |
-|---|---|---|---|
-| ① | `aws cloudformation deploy --stack-name hannctl-s1-shop --template-file cfn/stack.yaml --role-arn "$EXEC_ROLE" --capabilities CAPABILITY_NAMED_IAM --parameter-overrides CiSecurityGate=on` | `aws ecr batch-delete-image --repository-name hannctl-s1-shop-api --image-ids imageTag=vuln` 후 vuln 빌드 다시 시작 | 빌드 `FAILED`(로그에 `Total: … CRITICAL`, `image NOT pushed`), ECR에 vuln **없음** |
-| ② | `kubectl label ns shop pod-security.kubernetes.io/enforce=restricted hannctl.io/protected=true`<br>`kubectl apply -f k8s/policies/kyverno-baseline.yaml` | privileged Pod dry-run | `Error … violates PodSecurity "restricted"` 거부 |
-| ③ | `sed "s#__IMAGE__#$REPO:v1#" k8s/after/30-shop-api.yaml \| kubectl apply -f -` | `kubectl -n shop set image deploy/shop-api app=$REPO:v2-bad` 후 `kubectl -n shop get pods` | 새 Pod `0/1 Running`(NotReady), 기존 2개 계속 서비스 → `rollout undo` |
-| ④ | `helm install cluster-autoscaler autoscaler/cluster-autoscaler -n kube-system --version 9.59.0 -f k8s/after/40-cluster-autoscaler-values.yaml --set autoDiscovery.clusterName=hannctl-s1-shop --set awsRegion=ap-northeast-2`<br>`kubectl apply -f k8s/after/40-hpa.yaml` | 부하를 주면서 `kubectl -n shop get hpa -w`, `kubectl get nodes -w` | HPA 목표 2→8, Pending Pod 발생 → 1~2분 뒤 노드 1→2 |
-| ⑤ | (설치됨) | `./run.sh grafana` | Grafana에서 shop Namespace CPU·Pod 수 그래프 |
+6-5 와 같은 터미널에서 이어서 실행한다(`$EXEC_ROLE`, `$REPO`, `$SVC`, `lg` 를 그대로 쓴다).
+
+**① CI 보안 게이트 ON** — CloudFormation 파라미터 하나만 바꾼다(적지 않은 파라미터는 이전 값 유지)
+
+```bash
+# --tags 를 빼면 스택 태그가 지워져 유지 시간 자동 삭제가 꺼진다 → 6-3 과 같은 태그를 다시 적는다
+aws cloudformation deploy --stack-name hannctl-s1-shop --template-file cfn/stack.yaml --role-arn "$EXEC_ROLE" \
+  --capabilities CAPABILITY_NAMED_IAM --parameter-overrides CiSecurityGate=on \
+  --tags Project=hannctl hannctl:scenario=s1 hannctl:lifetime-hours=6 hannctl:est-usd-per-hour=0.25
+# 확인: Before 에서 들어간 vuln 이미지를 지우고, 같은 취약 이미지를 다시 빌드한다
+aws ecr batch-delete-image --repository-name hannctl-s1-shop-api --image-ids imageTag=vuln
+BID=$(aws codebuild start-build --project-name hannctl-s1-ci --query build.id --output text \
+  --environment-variables-override name=IMAGE_TAG,value=vuln name=VARIANT,value=vuln name=FAIL_MODE,value=0)
+until [ "$(aws codebuild batch-get-builds --ids "$BID" --query 'builds[0].buildStatus' --output text)" != IN_PROGRESS ]; do sleep 10; done
+aws codebuild batch-get-builds --ids "$BID" --query 'builds[0].buildStatus' --output text    # FAILED
+aws logs tail /aws/codebuild/hannctl-s1-ci --since 5m --format short | grep -E 'Total: |image NOT pushed' | grep -v 'Running command'
+#  → … Total: 22 (HIGH: 16, CRITICAL: 6)
+#  → … [hannctl] BUILD FAILED - image NOT pushed to ECR
+aws ecr describe-images --repository-name hannctl-s1-shop-api --image-ids imageTag=vuln
+#  → ImageNotFoundException (ECR 에 vuln 이미지가 없다 = 차단)
+```
+
+**② Pod 보안 (PSA restricted + Kyverno)**
+
+```bash
+kubectl label ns shop pod-security.kubernetes.io/enforce=restricted hannctl.io/protected=true
+#  → 기존 shop-api Pod 가 restricted 기준을 어긴다는 Warning 이 나온다(이미 실행 중인 Pod 는 그대로, ③ 에서 교체)
+kubectl apply -f k8s/policies/kyverno-baseline.yaml
+kubectl apply -n shop --dry-run=server -f k8s/attack/privileged-pod.yaml
+#  → Error from server (Forbidden): … violates PodSecurity "restricted:latest": privileged … (거부)
+```
+
+**③ 안전한 배포 (Probe + 롤링 전략)**
+
+```bash
+sed "s#__IMAGE__#$REPO:v1#" k8s/after/30-shop-api.yaml | kubectl apply -f -
+kubectl -n shop rollout status deploy/shop-api       # Probe·securityContext 가 들어간 v1 으로 교체될 때까지 대기
+kubectl -n shop set image deploy/shop-api app=$REPO:v2-bad   # 버그 버전 배포 시도
+sleep 45; kubectl -n shop get pods
+#  → 새 Pod 1개는 0/1 Running(NotReady, 트래픽 제외), 기존 v1 Pod 2개는 1/1 로 계속 서비스
+lg get $SVC/version                                  # {"version": "v1", …} — 고객은 계속 v1 을 받는다
+kubectl -n shop rollout undo deploy/shop-api         # 롤백
+kubectl -n shop rollout status deploy/shop-api
+```
+
+**④ 자동 확장 (HPA + Cluster Autoscaler)**
+
+```bash
+helm install cluster-autoscaler autoscaler/cluster-autoscaler -n kube-system --version 9.59.0 \
+  -f k8s/after/40-cluster-autoscaler-values.yaml --set autoDiscovery.clusterName=hannctl-s1-shop --set awsRegion=ap-northeast-2 --wait
+kubectl apply -f k8s/after/40-hpa.yaml
+sleep 30                                             # HPA 가 CPU 지표를 처음 읽을 때까지 대기
+lg load $SVC/products 150 16 &                       # 부하 150초 (백그라운드)
+for i in $(seq 15); do echo "--- $((i * 10))초"; kubectl -n shop get hpa shop-api --no-headers
+  kubectl -n shop get pods --field-selector=status.phase=Pending --no-headers 2>/dev/null; kubectl get nodes --no-headers; sleep 10; done
+wait
+#  → 1분 안팎에 HPA 의 REPLICAS 가 2→4→8 로 늘고, 노드 자리가 모자란 Pod 는 Pending
+#  → Pending 이 생기고 약 40~50초 뒤 새 노드가 Ready (노드 1→2대) → Pending Pod 가 모두 Running
+```
+
+**⑤ 관측** — 모니터링은 6-4 에서 이미 설치했다. 다른 터미널에서 `./run.sh grafana` → http://localhost:3000 → Dashboards → *Kubernetes / Compute Resources / Namespace (Pods)* → namespace `shop` 에서 Pod 수·CPU 그래프를 본다(Ctrl+C 로 종료).
 
 ### 6-7. 검증 · 채점 · 삭제는 그대로 자동으로
 
 ```bash
-./run.sh test after      # Before 와 같은 테스트 세트 실행
-./run.sh score           # 평가표 채점 + REPORT.html
+./run.sh test after && ./run.sh score   # Before 와 같은 테스트 세트 실행 → 평가표 채점 + REPORT.html
 ./run.sh down            # 삭제 (ECR 이미지·S3 소스까지) — 콘솔에서 스택 삭제해도 실행 역할이 자동으로 쓰인다
 ```
+
+> `./run.sh test after` 는 클러스터 구성을 바꾸지 않고 **직접 구성한 상태 그대로** Before 와 같은 테스트를 실행해, 가장 최근 증적 폴더(6-5 의 `test before` 가 만든 폴더)에 이어 기록한다. 그래서 `score` 가 Before·After 를 함께 채점한다. 6-5 의 `test before` 를 건너뛰면 Before 항목이 채워지지 않는다.
 
 ---
 
@@ -411,7 +530,7 @@ kubectl apply -n shop --dry-run=server -f k8s/attack/privileged-pod.yaml
    - 부하 중 `./run.sh watch` 또는 Grafana에서 **Pod 2 → 8, 노드 1 → 2(~3)** 이 늘어나는 장면
    - 버그 버전 배포 시 **v2-bad Pod가 NotReady로 남고 성공률이 유지되는** 장면 → `rollout undo`로 복구
    - CodeBuild 로그에서 **Trivy가 CRITICAL을 찾고 빌드가 실패**하며 ECR에 이미지가 없는 장면
-4. **정량 성과**(자기 조의 REPORT.md 실측값으로 채울 것, 예시는 검증 실행 값): Pod 2→8, 노드 1→2, 처리량 106→145 rps, 배포 중 성공률 34.7%→100%, 롤백 복구 56초→1초, 취약 이미지 차단 1/1(CRITICAL 6), 위험 Pod 차단 3/3.
+4. **정량 성과**(자기 조의 REPORT.md 실측값으로 채울 것, 아래는 실측 예시): Pod 2→8, 노드 1→2, 처리량 106→145 rps, 배포 중 성공률 34.7%→100%, 롤백 복구 56초→1초, 취약 이미지 차단 1/1(CRITICAL 6), 위험 Pod 차단 3/3.
 5. **한계**(과장하지 않기)
    - **HPA ≠ 노드 확장.** 둘은 다른 컴포넌트이며, 노드 추가에는 1~3분이 걸린다. 그 사이 일부 Pod는 Pending이다.
    - Readiness + maxUnavailable 0은 "**무중단을 시도**"하는 설정이다. 모든 장애 유형(예: 응답은 200인데 데이터가 틀림)을 막지는 못한다.
@@ -424,8 +543,9 @@ kubectl apply -n shop --dry-run=server -f k8s/attack/privileged-pod.yaml
 
 ```text
 s1-shop-deploy-resilience/
-├── run.sh                    # 유일한 진입점 (demo / up / before / after / test / score / status / watch / grafana / lifetime / down)
+├── run.sh                    # 유일한 진입점 (doctor / demo / up / before / after / test / score / status / watch / grafana / cost / lifetime / down)
 ├── README.md                 # 이 문서 (학습 가이드)
+├── START_HERE.md             # 처음 시작하기 (내려받기 · 준비 · 점검 · 실행 · 삭제)
 ├── RUBRIC.md / rubric.json   # 평가표 (사람용 / 자동 채점기용)
 ├── cfn/
 │   ├── stack.yaml            # AWS 인프라 전부: VPC, EKS, 노드그룹, 애드온, ECR, S3, CodeBuild(Trivy 게이트), CA IAM Role + Pod Identity
@@ -441,10 +561,20 @@ s1-shop-deploy-resilience/
 │   ├── policies/             # Kyverno 정책 (privileged / hostPath / root)
 │   ├── attack/               # 위험 Pod 예시 (서버측 dry-run 으로만 사용)
 │   └── monitoring-values.yaml  # Prometheus/Grafana 경량 설정
-├── lib/                      # 공통 스크립트 (common.sh, 채점기 score.py, 태그 감사 tagcheck.py)
+├── lib/                      # 공통 스크립트 (common.sh, 채점기 score.py, 태그 감사 tagcheck.py, 비용 추정 cost.py)
 ├── tools/install-tools.sh    # 필요한 도구 확인 → 없는 것만 설치 (python3·AWS CLI·kubectl·helm 등, macOS/Linux)
 └── evidence/                 # 실행마다 생성: results.jsonl, REPORT.md/html, before/·after/ 증적 (부하 CSV, CI 로그, 거부 메시지 등)
 ```
+
+**`cfn/` 템플릿 3개의 관계**
+
+| 템플릿 | 만드는 스택 → 주요 리소스 | 언제 만들어지나 |
+|---|---|---|
+| `hannctl-identity.yaml` | `hannctl-identity` → 작업용 역할 `hannctl-operator-role` (+root 로 로그인했을 때 콘솔 사용자 `hannctl-admin`) | `run.sh` 첫 실행 때 자동 (손으로는 6-0) |
+| `hannctl-finops-guard.yaml` | `hannctl-finops-guard` → 자동 삭제 Lambda `hannctl-janitor`, 월 예산, CloudFormation 실행 역할 `hannctl-cfn-exec-role` | 첫 `demo`/`up` 때 자동 (손으로는 6-2) |
+| `stack.yaml` | `hannctl-s1-shop` → 이 시나리오의 실습 인프라 전부. `hannctl-cfn-exec-role` 로 배포되므로 guard 스택이 먼저 있어야 한다 | `demo`/`up` 때 자동 (손으로는 6-3) |
+
+> 앞의 두 스택은 계정에 하나씩만 있고 모든 시나리오가 함께 쓴다(비용 0원 수준). `./run.sh down` 은 시나리오 스택만 지우고, 공용 스택은 `./run.sh down-all`(guard) / `./run.sh down-all --identity`(identity 까지)로 지운다(9-2 참고).
 
 ---
 
@@ -457,20 +587,20 @@ s1-shop-deploy-resilience/
 | EKS Control Plane | 1개 (필수, 고정) | $0.100 |
 | 워커 노드 | Graviton 2 vCPU(**t4g.large** 우선) **1대로 시작**, 부하 시 Cluster Autoscaler 가 최대 3대 | 평소 $0.083 (부하 중 잠깐 2~3대) |
 | NAT Gateway + 공인 IP | 1개 | $0.064 |
-| CodeBuild (ARM small) | 빌드할 때만 분 단위 과금, demo 1회 빌드 5번 × 약 2분 | 실행 시 ≈ $0.04 |
+| CodeBuild (ARM small) | 빌드할 때만 분 단위 과금, demo 1회 빌드 5번 × 1분 미만 | 실행 시 ≈ $0.04 |
 | 디스크 · 로그 · ECR · S3 | 20GB gp3, 로그 3일, 이미지 최근 10개, 소스 1일 | ~$0.005 |
 | **합계 (온디맨드, 보수적)** | | **≈ $0.25/시간 (≈ 350원)** |
 
 | 사용 형태 | 예상 비용 |
 |---|---|
-| `demo` 1회 (생성 ~15분 + 설치 ~8분 + 진행 **실측 11분** + 삭제 ~10분) | **≈ $0.2 (≈ 280원)** — 진행 구간 실측 $0.05, 실제 값은 매 실행 `REPORT.html` 의 "비용" 섹션 |
+| `demo` 1회 (생성 ~14분 + 설치 ~3분 + 진행 **실측 12분** + 삭제 ~9분) | **≈ $0.15~0.2 (≈ 210~280원)** — `REPORT.html` "비용" 섹션의 "이번 demo 실행" 실측 약 $0.12(약 0.5시간), 삭제 시간까지 더하면 약 $0.15 |
 | 1시간 실습 | ≈ $0.25 (≈ 350원) |
 | 깜빡 잊고 방치 | 처음 정한 유지 시간(기본 **6시간**) 후 자동 삭제 → **최대 ≈ $1.5 (≈ 2,100원)** |
 
 > `./run.sh cost` → 이번 달 hannctl 전체 누적 예상 비용(가동시간 × 단가)을 바로 보여준다. AWS 청구서는 최대 24시간 늦게 반영된다.
 
 > 💰 **더 아끼고 싶다면 Spot(선택)**: `HANNCTL_CAPACITY=SPOT ./run.sh demo` → 노드 비용 약 70% 절감(시간당 약 -$0.05).
-> 단, Spot 노드는 AWS가 용량이 부족하면 **실습 중에 회수·교체**된다. 실제 검증 중에도 서울 리전 t4g Spot이 회수되어 부하 테스트가 중단된 적이 있다. 그래서 기본값은 온디맨드이고, Spot을 쓸 때는 Graviton 2 vCPU 5종을 섞어 위험을 줄인다. **발표 당일에는 온디맨드를 권장**한다.
+> 단, Spot 노드는 AWS가 용량이 부족하면 **실습 중에 회수·교체**된다. 서울 리전 t4g Spot은 실습 도중 회수되어 부하 테스트가 중단될 수 있다. 그래서 기본값은 온디맨드이고, Spot을 쓸 때는 Graviton 2 vCPU 5종을 섞어 위험을 줄인다. **발표 당일에는 온디맨드를 권장**한다.
 
 ### 9-2. 비용 폭주를 막는 장치
 
@@ -487,6 +617,7 @@ s1-shop-deploy-resilience/
 | `./run.sh cap 0` / `cap 20` | 월 비용 상한 끄기 / 다시 켜기 (자세한 내용: [START_HERE.md 7단계](START_HERE.md#7단계선택-자동-삭제비용-상한을-끄고-싶다면)) |
 | `./run.sh down` | 스택 삭제(ECR 이미지·S3 객체 포함) + 잔여 리소스 확인 |
 | `./run.sh down-all` | 공통 안전장치(janitor·예산)까지 삭제 (다른 hannctl 스택이 없을 때만) |
+| `./run.sh down-all --identity` | 위에 더해 작업용 역할(`hannctl-identity` 스택)까지 삭제 |
 
 **hannctl 식별자 규칙**: 이 시나리오가 AWS에 만드는 모든 리소스는 이름이 `hannctl-`로 시작하거나 `Project=hannctl` 태그를 가진다(`tag_compliance` 자동 검사). EKS가 자동 생성하는 노드 인스턴스 프로파일(`eks-…`)과 서비스 연결 역할(`AWSServiceRoleFor…`)은 이름을 정할 수 없지만, 클러스터·노드 그룹과 함께 생성되고 삭제된다.
 

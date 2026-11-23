@@ -42,6 +42,9 @@ else
   C_R=; C_G=; C_Y=; C_B=; C_M=; C_C=; C_DIM=; C_BOLD=; C_0=
 fi
 banner()  { printf '\n%s%s══════════════════════════════════════════════════════════════════════%s\n%s  %s%s\n%s══════════════════════════════════════════════════════════════════════%s\n' "$C_BOLD" "$C_B" "$C_0" "$C_BOLD" "$*" "$C_0" "$C_B" "$C_0"; }
+guide_step() { # GUIDE.md 의 단계 번호를 화면에 표시 — 멘티가 문서의 어느 단계인지 바로 맞춰 볼 수 있게
+  printf '\n%s📍 [가이드 %s/10단계] %s%s\n' "$C_BOLD$C_M" "$1" "$2" "$C_0"
+}
 section() { printf '\n%s── %s %s\n' "$C_C$C_BOLD" "$*" "$C_0"; }
 info()    { printf '%s  • %s%s\n' "$C_DIM" "$*" "$C_0"; }
 ok()      { printf '%s  ✔ %s%s\n' "$C_G" "$*" "$C_0"; }
@@ -108,7 +111,7 @@ choose_lifetime() { # 처음 시작할 때 유지 시간을 정한다 (이미 �
 iso_after_hours() { python3 -c 'import datetime,sys;print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=float(sys.argv[1]))).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$1"; }
 
 awscli_ok() { # AWS CLI 2.32 이상 (aws login 지원 버전)
-  local v; v=$(aws --version 2>&1 | sed -n 's#^aws-cli/\([0-9]*\)\.\([0-9]*\)\..*#\1 \2#p')
+  local v; v=$(AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null aws --version 2>&1 | sed -n 's#^aws-cli/\([0-9]*\)\.\([0-9]*\)\..*#\1 \2#p')
   # shellcheck disable=SC2086
   set -- $v; [ "${1:-0}" -eq 2 ] && [ "${2:-0}" -ge 32 ]
 }
@@ -167,6 +170,14 @@ ensure_login() { # 로그인 자격 증명이 유효한지 확인하고, 없으�
   aws_login
   boot_aws sts get-caller-identity >/dev/null 2>&1 || die "로그인 후에도 자격 증명을 확인할 수 없습니다"
 }
+clear_role_cache() { # AWS CLI 가 저장해 둔 작업용 역할의 임시 자격 증명만 지운다 (역할을 지웠다 다시 만들면 옛 자격 증명이 무효가 되므로)
+  local d="${AWS_CLI_CACHE_DIR:-$HOME/.aws/cli/cache}" f
+  [ -d "$d" ] || return 0
+  for f in "$d"/*.json; do
+    [ -f "$f" ] && grep -q "assumed-role/$OPERATOR_ROLE/" "$f" 2>/dev/null && rm -f "$f"
+  done
+  return 0
+}
 identity_deploy() { # identity_deploy [Key=Value ...] — 신원 스택 생성/갱신 (로그인 자격 증명으로)
   local sha; sha=$(python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()[:12])' "$IDENTITY_TEMPLATE")
   info "작업용 IAM 역할 $OPERATOR_ROLE 준비 중 (스택 $IDENTITY_STACK, 처음 한 번 약 1분)"
@@ -174,6 +185,7 @@ identity_deploy() { # identity_deploy [Key=Value ...] — 신원 스택 생성/�
     --capabilities CAPABILITY_NAMED_IAM --no-fail-on-empty-changeset ${1:+--parameter-overrides "$@"} \
     --tags Project=hannctl hannctl:role=identity hannctl:est-usd-per-hour=0 "hannctl:template-sha=$sha" hannctl:managed-by=hannctl-cli \
     >/dev/null || die "신원 스택 배포 실패 — 로그인한 사용자에게 관리자 권한(IAM 포함)이 필요합니다"
+  clear_role_cache
 }
 identity_current() { # 신원 스택이 있고 템플릿이 최신인가
   local sha cur
@@ -199,25 +211,35 @@ root_bootstrap() { # root 로 로그인한 경우: 콘솔 사용자 hannctl-admi
     *:root|'') die "아직 root 로 로그인되어 있습니다 — 브라우저에서 로그아웃 후 ./run.sh login" ;;
   esac
 }
+profile_set() { # profile_set KEY VALUE — 프로필 hannctl 의 값이 다를 때만 쓴다 (demo 와 watch 를 동시에 시작해도 설정 파일이 깨지지 않게 잠금)
+  [ "$(aws configure get "$1" --profile "$HANNCTL_PROFILE" 2>/dev/null)" = "$2" ] && return 0
+  local lock="${TMPDIR:-/tmp}/hannctl-aws-config.lock" i
+  for i in $(seq 1 50); do mkdir "$lock" 2>/dev/null && break; sleep 0.2; done
+  [ "$(aws configure get "$1" --profile "$HANNCTL_PROFILE" 2>/dev/null)" = "$2" ] || aws configure set "$1" "$2" --profile "$HANNCTL_PROFILE"
+  rmdir "$lock" 2>/dev/null || true
+}
 ensure_identity() { # 로그인 확인 → 작업용 역할 준비 → 프로필 hannctl 로 전환 (프로세스당 한 번)
   [ -n "${IDENTITY_READY:-}" ] && return 0
   ensure_login
   local arn acct src i
   arn=$(boot_aws sts get-caller-identity --query Arn --output text); acct=$(echo "$arn" | cut -d: -f5)
-  case "$arn" in *:root) root_bootstrap "$acct" ;; esac
-  identity_current || identity_deploy
+  case "$arn" in
+    *:root) root_bootstrap "$acct"; identity_current || identity_deploy ;;
+    *":user/hannctl-admin") ;;   # root 가 만들어 준 콘솔 사용자: 역할 전환 권한만 있다 (신원 스택은 root 로그인 때 이미 만들어짐)
+    *) identity_current || identity_deploy ;;
+  esac
   # 작업용 프로필 hannctl: 로그인 자격 증명으로 hannctl-operator-role 전환 (CLI 가 만료 전에 자동 갱신)
   src=$(login_source)
-  aws configure set role_arn "arn:aws:iam::$acct:role/$OPERATOR_ROLE" --profile "$HANNCTL_PROFILE"
-  if [ -n "$src" ]; then aws configure set source_profile "$src" --profile "$HANNCTL_PROFILE"
-  else aws configure set credential_source EcsContainer --profile "$HANNCTL_PROFILE"; fi
-  aws configure set role_session_name hannctl-cli --profile "$HANNCTL_PROFILE"
-  aws configure set region "$HANNCTL_REGION" --profile "$HANNCTL_PROFILE"
+  profile_set role_arn "arn:aws:iam::$acct:role/$OPERATOR_ROLE"
+  if [ -n "$src" ]; then profile_set source_profile "$src"; else profile_set credential_source EcsContainer; fi
+  profile_set role_session_name hannctl-cli
+  profile_set region "$HANNCTL_REGION"
   export AWS_PROFILE="$HANNCTL_PROFILE"
   for i in 1 2 3 4 5 6 7 8 9 10 11 12; do   # 새 역할은 전파에 몇 초 걸린다
     case "$(aws sts get-caller-identity --query Arn --output text 2>/dev/null)" in
       *":assumed-role/$OPERATOR_ROLE/"*) IDENTITY_READY=1; return 0 ;;
     esac
+    clear_role_cache   # 무효가 된 옛 자격 증명이 남아 있으면 다음 시도에서 새로 받는다
     sleep 5
   done
   die "$OPERATOR_ROLE 로 전환하지 못했습니다 — ./run.sh doctor 로 확인"
@@ -237,7 +259,7 @@ cmd_identity_delete() { # 신원 스택 삭제 (역할·콘솔 사용자) — �
   case "$arn" in *":user/hannctl-admin") die "hannctl-admin 은 자기 자신을 지울 수 없습니다 → root 로 로그인한 CloudShell 에서: aws cloudformation delete-stack --stack-name $IDENTITY_STACK" ;; esac
   info "신원 스택 삭제: $IDENTITY_STACK ($OPERATOR_ROLE, hannctl-admin)"
   boot_aws cloudformation delete-stack --stack-name "$IDENTITY_STACK" &&
-    boot_aws cloudformation wait stack-delete-complete --stack-name "$IDENTITY_STACK" && ok "신원 스택 삭제 완료"
+    boot_aws cloudformation wait stack-delete-complete --stack-name "$IDENTITY_STACK" && clear_role_cache && ok "신원 스택 삭제 완료"
 }
 
 # ----------------------------------------------------------------------------- FinOps Guard
@@ -414,6 +436,23 @@ pre_clean_stack() { # CFN 이 지울 수 없는 내용물(버킷 객체, 수동 
   done
 }
 
+eks_orphan_clean() { # 노드가 줄어들 때 VPC CNI 가 드물게 남기는 분리된 ENI(+클러스터 삭제 뒤 남은 EKS 보안 그룹) 정리 — 남아 있으면 서브넷·VPC 삭제가 실패한다
+  local cl=${1:-${CLUSTER:-}} e
+  case "$cl" in hannctl-*) ;; *) return 0 ;; esac
+  for e in $(aws ec2 describe-network-interfaces --filters "Name=tag:cluster.k8s.amazonaws.com/name,Values=$cl" Name=status,Values=available \
+               --query 'NetworkInterfaces[].NetworkInterfaceId' --output text 2>/dev/null); do
+    info "노드 축소 때 남은 네트워크 인터페이스 삭제: $e"
+    aws ec2 delete-network-interface --network-interface-id "$e" 2>/dev/null || true
+  done
+  if ! aws eks describe-cluster --name "$cl" >/dev/null 2>&1; then
+    for e in $(aws ec2 describe-security-groups --filters "Name=tag:aws:eks:cluster-name,Values=$cl" \
+                 --query 'SecurityGroups[].GroupId' --output text 2>/dev/null); do
+      info "클러스터 삭제 후 남은 보안 그룹 삭제: $e"
+      aws ec2 delete-security-group --group-id "$e" >/dev/null 2>&1 || true
+    done
+  fi
+  return 0
+}
 destroy_stack() { # destroy_stack STACK
   local stack=$1 st; st=$(stack_status "$stack")
   [ "$st" = "NONE" ] && { ok "$stack 없음 (이미 삭제됨)"; return 0; }
@@ -428,7 +467,7 @@ destroy_stack() { # destroy_stack STACK
   watch_stack_events "$stack" "$t0" "$wpid"
   if ! wait "$wpid"; then
     warn "1차 삭제 실패 → 원인 확인 후 재시도"; stack_events_tail "$stack"
-    pre_clean_stack "$stack"; aws cloudformation delete-stack --stack-name "$stack"
+    pre_clean_stack "$stack"; eks_orphan_clean; aws cloudformation delete-stack --stack-name "$stack"
     aws cloudformation wait stack-delete-complete --stack-name "$stack" || die "삭제 실패: 콘솔에서 $stack 이벤트 확인"
   fi
   ok "$stack 삭제 완료"
@@ -571,7 +610,13 @@ record() { # record KEY PHASE EXPECTED OBSERVED "TITLE" ["METRIC"]
     "$key" "$phase" "$expected" "$observed" "$title" "$metric" >> "$RUN_DIR/results.jsonl"
   local mark color
   if [ "$expected" = "$observed" ]; then mark="✔"; color=$C_G; else mark="✘"; color=$C_R; fi
-  [ "$phase" = "before" ] && [ "$expected" = "$observed" ] && color=$C_Y   # Before 에서 위험이 재현된 것
+  # Before 에서 '차단' 대상 경로가 열려 있는 것 = 위험이 재현된 것 → ⚠ 노란색
+  if [ "$phase" = "before" ] && [ "$expected" = "$observed" ]; then
+    case "$title" in
+      정상*|인프라*|모든*|유지시간*|증적*|자체*|kube-bench\ 자동*|점검\ 소요*) ;;   # 정상 동작·측정 항목
+      *) case "$observed" in BLOCKED|DENIED|ACCESS_DENIED|no) ;; *) mark="⚠"; color=$C_Y ;; esac ;;   # 이미 막혀 있으면 위험 아님
+    esac
+  fi
   printf '  %s%s [%-6s] %-44s 기대=%-9s 관찰=%-9s %s%s\n' "$color" "$mark" "$phase" "$title" "$expected" "$observed" "${metric:+($metric)}" "$C_0"
 }
 
@@ -647,13 +692,13 @@ ${C_BOLD}$SCENARIO_TITLE${C_0}
                      Before 적용 → 테스트 → N초 후 자동으로 개선 단계별 적용 → After 테스트 → 채점/보고서
   before             Before(통제 전) 상태 적용 + 테스트
   after              개선 단계 적용 + After 테스트 + 채점
-  test before|after  현재 상태로 테스트만 재실행
+  test before|after  현재 상태로 테스트만 실행 (before 는 새 결과 폴더, after 는 최근 결과 폴더에 기록 — 클러스터 구성은 바꾸지 않음)
   score              최근 실행 결과 채점 + REPORT.md 생성
   status             AWS/EKS 리소스 한눈에 보기
   watch              (다른 터미널에서) 클러스터 상태 + 진행 단계 실시간 관찰
   cost               이번 달 hannctl 누적 예상 비용 / 상한
   cap <USD>          월 비용 상한 변경 (기본 20, 0 = 끄기)
-  kubeconfig         KUBECONFIG·PATH 설정문 출력 → eval "$(./run.sh kubeconfig)" (직접 kubectl/aws 사용 시)
+  kubeconfig         KUBECONFIG·PATH 설정문 출력 → eval "\$(./run.sh kubeconfig)" (직접 kubectl/aws 사용 시)
   lifetime <HOURS>   유지 시간 변경 — "생성 시각부터 HOURS 시간" (예: 6시간 중 4시간 지난 뒤 9 → 남은 5시간, 0 = 무제한)
   down               이 시나리오의 모든 AWS 리소스 삭제(스택 + 내용물) 및 잔여 확인
   down-all           down + 공통 FinOps Guard(janitor/예산)까지 삭제(다른 hannctl 스택이 없을 때)
@@ -669,14 +714,18 @@ cmd_up() {
   preflight
   cost_guard
   choose_lifetime
+  guide_step 3 "인프라 생성 — CloudFormation 이 AWS 리소스를 만든다 (약 12~14분)"
   local params; params=$(stack_params)
   # shellcheck disable=SC2086
   deploy_stack "$STACK" "$SCEN_DIR/cfn/stack.yaml" $params
+  guide_step 4 "클러스터 기본 구성 — 노드 준비 + 실습 앱·도구 설치"
+  console_view_access
   kube_init "$CLUSTER"
   wait_nodes
   scenario_up
   mark_setup_done
-  ok "인프라 준비 완료 → ./run.sh demo  또는 ./run.sh status"
+  if [ -n "${RUN_T0:-}" ]; then ok "인프라 준비 완료 → 이어서 Before 단계로 넘어갑니다"
+  else ok "인프라 준비 완료 → ./run.sh demo  또는 ./run.sh status"; fi
 }
 ensure_up() { # 스택 + 클러스터 내부 구성이 모두 끝났는지 확인하고, 빠진 부분만 이어서 수행
   local st; st=$(stack_status "$STACK")
@@ -684,11 +733,33 @@ ensure_up() { # 스택 + 클러스터 내부 구성이 모두 끝났는지 확�
     CREATE_COMPLETE|UPDATE_COMPLETE|UPDATE_ROLLBACK_COMPLETE)
       kube_init "$CLUSTER"
       if ! k -n kube-system get configmap hannctl-setup >/dev/null 2>&1; then
+        guide_step 4 "클러스터 기본 구성 — 노드 준비 + 실습 앱·도구 설치"
         warn "클러스터 내부 구성이 완료되지 않았습니다 → 이어서 구성합니다"
         wait_nodes; scenario_up; mark_setup_done
       fi ;;
     *) cmd_up ;;
   esac
+}
+ensure_cluster() { # 테스트 전용: 스택·클러스터가 있는지만 확인 (내부 구성은 건드리지 않는다 — 직접 구성한 상태 그대로 테스트)
+  case "$(stack_status "$STACK")" in
+    CREATE_COMPLETE|UPDATE_COMPLETE|UPDATE_ROLLBACK_COMPLETE) kube_init "$CLUSTER" ;;
+    *) die "스택 $STACK 이 없습니다 — 먼저 ./run.sh up (또는 README 6절의 인프라 생성)을 진행하세요" ;;
+  esac
+}
+console_view_access() { # 로그인한 콘솔 사용자도 EKS 콘솔에서 노드·Pod 를 볼 수 있게 읽기 전용(AmazonEKSAdminViewPolicy) 권한을 준다
+  local arn role
+  arn=$(boot_aws sts get-caller-identity --query Arn --output text 2>/dev/null) || return 0
+  case "$arn" in
+    *":assumed-role/"*) role=$(echo "$arn" | cut -d/ -f2)   # SSO 역할처럼 경로가 있는 역할도 정확한 ARN 으로
+       arn=$(boot_aws iam get-role --role-name "$role" --query Role.Arn --output text 2>/dev/null) || return 0 ;;
+  esac
+  case "$arn" in *":role/$OPERATOR_ROLE") return 0 ;; esac   # 작업용 역할은 이미 관리자
+  aws eks describe-access-entry --cluster-name "$CLUSTER" --principal-arn "$arn" >/dev/null 2>&1 && return 0
+  aws eks create-access-entry --cluster-name "$CLUSTER" --principal-arn "$arn" >/dev/null 2>&1 &&
+  aws eks associate-access-policy --cluster-name "$CLUSTER" --principal-arn "$arn" \
+    --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSAdminViewPolicy --access-scope type=cluster >/dev/null 2>&1 &&
+  info "AWS 콘솔에서도 노드·Pod 를 볼 수 있도록 로그인한 사용자에게 EKS 읽기 전용 권한을 주었습니다: ${arn##*:}"
+  return 0
 }
 mark_setup_done() { # scenario_up 완료 표식 (중단 후 재실행 시 이어하기용)
   k -n kube-system create configmap hannctl-setup --from-literal=scenario="$SCENARIO_ID" \
@@ -696,16 +767,20 @@ mark_setup_done() { # scenario_up 완료 표식 (중단 후 재실행 시 이어
 }
 cmd_before() {
   ensure_up; run_new
+  guide_step 5 "Before — 보호 장치가 없는 상태에서 위험을 재현한다"
   banner "BEFORE — 통제 전 상태 재현 ($SCENARIO_TITLE)"
   timeline before "Before 상태 적용" "보호 장치가 부족한 실습 상태"
   scenario_before
   section "Before 테스트"
+  info "읽는 법: ⚠ 노란 줄 = 개선 후 막혀야 할 위험이 지금은 그대로 열려 있음(위험 재현 성공), ✔ 초록 줄 = 정상 동작"
   scenario_tests before
 }
 cmd_after() {
   ensure_up; run_latest
+  guide_step 7 "개선 단계 — 보호 장치를 하나씩 적용하고 바로 효과를 확인한다"
   banner "AFTER — 개선 단계 자동 적용"
   scenario_after
+  guide_step 8 "After 테스트·채점 — Before 와 같은 테스트를 다시 실행한다"
   section "After 테스트 (Before 와 동일한 테스트)"
   scenario_tests after
   write_run_cost
@@ -720,14 +795,17 @@ cmd_demo() {
       *) shift ;;
     esac
   done
+  guide_step 2 "실행 시작 — 유지 시간을 정하고 demo 를 시작한다"
   preflight; choose_lifetime   # 가장 먼저 유지 시간을 정한다
   local t0; t0=$(date +%s); RUN_T0=$t0
   printf '\n%s👀 팁: 다른 터미널에서 "./run.sh watch" 를 실행하면 클러스터가 바뀌는 모습을 실시간으로 볼 수 있습니다.%s\n' "$C_BOLD$C_Y" "$C_0"
-  printf '%s   README.md 의 "4. 자동 진행 순서" 표를 함께 보면서 따라가세요.%s\n' "$C_Y" "$C_0"
+  printf '%s   GUIDE.md 의 단계 번호(📍)가 이 화면의 📍 표시와 같습니다. 화면과 문서를 맞춰 보며 따라가세요.%s\n' "$C_Y" "$C_0"
   cmd_before
+  guide_step 6 "Before 관찰 — 위험한 상태를 직접 살펴보는 시간"
   section "Before 관찰 시간 (${BEFORE_WAIT_SECONDS}s) — 다른 터미널에서 ./run.sh status 또는 README 의 조회 명령을 실행해 보세요"
   countdown "$BEFORE_WAIT_SECONDS" "Before 상태 유지 중, 이후 자동으로 After 로 전환"
   cmd_after
+  guide_step 9 "결과 확인 — 점수와 보고서(REPORT.html)"
   ok "데모 총 소요 $(( ($(date +%s) - t0) / 60 ))분 — 보고서: ${RUN_DIR#$SCEN_DIR/}/REPORT.md (.html)"
   open_report
 }
@@ -740,13 +818,25 @@ open_report() { # HANNCTL_OPEN_REPORT=0 이면 자동으로 열지 않음
   return 0
 }
 cmd_watch() { # 다른 터미널에서 실시간 관찰용 (Ctrl+C 로 종료)
-  preflight >/dev/null; kube_init "$CLUSTER"
+  preflight >/dev/null
+  local st
+  while st=$(aws eks describe-cluster --name "$CLUSTER" --query cluster.status --output text 2>/dev/null); [ "$st" != ACTIVE ]; do
+    clear
+    printf '%s%s — 실시간 관찰 (%s)%s\n' "$C_BOLD" "$SCENARIO_TITLE" "$(date '+%H:%M:%S')" "$C_0"
+    printf '  ⏳ EKS 클러스터 %s 준비 대기 중 (현재: %s) — 인프라 생성에 10~15분 걸립니다. 준비되면 자동으로 화면이 바뀝니다.\n' "$CLUSTER" "${st:-아직 없음}"
+    sleep 15
+  done
+  kube_init "$CLUSTER"
+  local stack_t0   # 이번 스택이 만들어지기 전의 실행 기록(지난 실습)은 "최근 진행 단계"에 보여주지 않는다
+  stack_t0=$(aws cloudformation describe-stacks --stack-name "$STACK" --query 'Stacks[0].CreationTime' --output text 2>/dev/null |
+    python3 -c 'import sys,datetime;t=sys.stdin.read().strip();print(int(datetime.datetime.fromisoformat(t.replace("Z","+00:00")).timestamp()) if t and t!="None" else 0)' 2>/dev/null || echo 0)
   while true; do
     clear
     printf '%s%s — 실시간 관찰 (%s, 5초마다 갱신, Ctrl+C 종료)%s\n' "$C_BOLD" "$SCENARIO_TITLE" "$(date '+%H:%M:%S')" "$C_0"
     scenario_watch 2>/dev/null || scenario_status 2>/dev/null
-    if [ -L "$SCEN_DIR/evidence/latest" ] && [ -f "$SCEN_DIR/evidence/latest/timeline.jsonl" ]; then
-      printf '\n%s최근 진행 단계%s\n' "$C_BOLD" "$C_0"
+    if [ -L "$SCEN_DIR/evidence/latest" ] && [ -f "$SCEN_DIR/evidence/latest/timeline.jsonl" ] &&
+       [ "$(python3 -c 'import os,sys;print(int(os.path.getmtime(sys.argv[1])))' "$SCEN_DIR/evidence/latest/timeline.jsonl")" -ge "${stack_t0:-0}" ]; then
+      printf '\n%s최근 진행 단계%s (%s)\n' "$C_BOLD" "$C_0" "$(basename "$(readlink "$SCEN_DIR/evidence/latest")")"
       tail -4 "$SCEN_DIR/evidence/latest/timeline.jsonl" | python3 -c 'import sys,json;[print("  ",d["ts"],d["title"]) for d in map(json.loads,sys.stdin)]'
     fi
     sleep 5
@@ -757,11 +847,11 @@ cmd_status() {
   banner "STATUS — $SCENARIO_TITLE"
   section "AWS (CloudFormation 스택: $STACK)"
   aws cloudformation describe-stacks --stack-name "$STACK" \
-    --query 'Stacks[0].{상태:StackStatus,생성:CreationTime,유지시간:Tags[?Key==`hannctl:lifetime-hours`]|[0].Value,자동삭제UTC:Tags[?Key==`hannctl:expires-at`]|[0].Value}' --output table 2>/dev/null || { warn "스택 없음"; return 0; }
+    --query 'Stacks[0].{"상태":StackStatus,"생성":CreationTime,"유지시간":Tags[?Key==`hannctl:lifetime-hours`]|[0].Value,"자동삭제UTC":Tags[?Key==`hannctl:expires-at`]|[0].Value}' --output table 2>/dev/null || { warn "스택 없음"; return 0; }
   aws cloudformation list-stack-resources --stack-name "$STACK" \
     --query 'StackResourceSummaries[].[ResourceType,PhysicalResourceId,ResourceStatus]' --output text | awk '{printf "    %-40s %-55s %s\n",$1,substr($2,1,55),$3}'
   section "EKS"
-  aws eks describe-cluster --name "$CLUSTER" --query 'cluster.{버전:version,상태:status,엔드포인트접근:resourcesVpcConfig.publicAccessCidrs,로그:logging.clusterLogging[?enabled].types|[0]}' --output table
+  aws eks describe-cluster --name "$CLUSTER" --query 'cluster.{"버전":version,"상태":status,"엔드포인트접근":resourcesVpcConfig.publicAccessCidrs,"로그":logging.clusterLogging[?enabled].types|[0]}' --output table
   kube_init "$CLUSTER"
   section "Kubernetes 노드 / 워크로드"
   k get nodes -o wide | cut -c1-140
@@ -771,8 +861,10 @@ cmd_status() {
 }
 cmd_down() {
   preflight; ensure_guard
+  guide_step 10 "삭제 — 이 시나리오가 만든 AWS 리소스를 모두 지운다"
   banner "DOWN — $SCENARIO_TITLE 리소스 전체 삭제"
   scenario_down 2>/dev/null || true
+  eks_orphan_clean
   destroy_stack "$STACK"
   rm -rf "$SCEN_DIR/.kube"
   ok "완료. (공통 FinOps Guard 는 유지됨 — 함께 지우려면: ./run.sh down-all)"
@@ -782,16 +874,18 @@ cmd_down_all() { # 이 시나리오 + (다른 hannctl 시나리오 스택이 없
   local others; others=$(aws cloudformation describe-stacks \
     --query "Stacks[?starts_with(StackName,'hannctl-') && StackName!='$GUARD_STACK' && StackName!='$IDENTITY_STACK' && StackStatus!='DELETE_COMPLETE'].StackName" --output text)
   if [ -n "$others" ]; then
-    warn "다른 hannctl 시나리오 스택이 아직 있어 FinOps Guard 는 유지합니다: $others"
+    warn "다른 hannctl 시나리오 스택이 아직 있어 FinOps Guard${1:+ 와 작업용 신원} 은 유지합니다: $others"
   else
     destroy_stack "$GUARD_STACK"
     aws budgets delete-budget --account-id "$(account_id)" --budget-name hannctl-monthly-budget >/dev/null 2>&1 || true
     ok "hannctl 리소스 전체 정리 완료"
-    [ "${1:-}" = --identity ] || info "작업용 신원($IDENTITY_STACK: $OPERATOR_ROLE, 비용 0원)은 다음 실습을 위해 남깁니다. 지우려면: ./run.sh down-all --identity"
+    if [ "${1:-}" = --identity ]; then cmd_identity_delete
+    else info "작업용 신원($IDENTITY_STACK: $OPERATOR_ROLE, 비용 0원)은 다음 실습을 위해 남깁니다. 지우려면: ./run.sh down-all --identity"; fi
   fi
 }
 
 cmd_doctor() { # 처음 실행 전 환경 점검 — 무엇이 부족한지 ✔/✘ 로 알려준다
+  guide_step 1 "사전 점검 — 도구·로그인·권한·한도를 확인한다"
   banner "DOCTOR — 실행 환경 점검 ($SCENARIO_TITLE)"
   local bad=0
   tools_ready || { warn "없는 도구를 먼저 설치합니다"; bash "$SCEN_DIR/tools/install-tools.sh"; hash -r; }
@@ -799,7 +893,7 @@ cmd_doctor() { # 처음 실행 전 환경 점검 — 무엇이 부족한지 ✔/
   chk "bash / OS: $(uname -s) $(uname -m)" "true" ""
   chk "python3 ($(python3 --version 2>&1))" "python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)'" "./tools/install-tools.sh 실행 (START_HERE.md 2단계)"
   chk "curl" "command -v curl" "curl 설치"
-  chk "AWS CLI 2.32+ ($(aws --version 2>&1 | cut -d' ' -f1))" "awscli_ok" "./tools/install-tools.sh 실행 (START_HERE.md 2단계)"
+  chk "AWS CLI 2.32+ ($(AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null aws --version 2>&1 | cut -d' ' -f1))" "awscli_ok" "./tools/install-tools.sh 실행 (START_HERE.md 2단계)"
   chk "kubectl ($(kubectl version --client 2>/dev/null | head -1))" "command -v kubectl" "./tools/install-tools.sh 실행"
   chk "helm ($(helm version --short 2>/dev/null))" "command -v helm" "./tools/install-tools.sh 실행"
   ( ensure_identity ) || true                               # 로그인이 안 되어 있으면 여기서 자동 로그인 + 작업용 역할 준비
@@ -833,19 +927,22 @@ dispatch() {
     demo) cmd_demo "$@" ;;
     before) cmd_before ;;
     after) cmd_after ;;
-    test) ensure_up; run_latest; scenario_tests "${1:-after}" ;;
+    test) ensure_cluster   # before → 새 증적 폴더, after → 최근 증적 폴더에 이어 기록
+          if [ "${1:-after}" = before ]; then run_new; else run_latest; fi
+          scenario_tests "${1:-after}"
+          [ "${1:-after}" = after ] && write_run_cost ;;
     score) run_latest; score_run ;;
     status) cmd_status ;;
     watch) cmd_watch ;;
     cost) cmd_cost ;;
     cap) cmd_cap "$@" ;;
     doctor) cmd_doctor ;;
-    kubeconfig) echo "export KUBECONFIG=$SCEN_DIR/.kube/config; export PATH=$SCEN_DIR/.tools/bin:\$PATH; export AWS_PROFILE=$HANNCTL_PROFILE AWS_REGION=$HANNCTL_REGION" ;;
+    kubeconfig) echo "export KUBECONFIG=$SCEN_DIR/.kube/config; export PATH=$SCEN_DIR/.tools/bin:\$PATH; export AWS_PROFILE=$HANNCTL_PROFILE AWS_REGION=$HANNCTL_REGION AWS_PAGER=\"\"" ;;
     login) cmd_login ;;
     logout) cmd_logout ;;
     lifetime|extend) preflight; set_lifetime "$STACK" "${1:-}" ;;
     down) cmd_down ;;
-    down-all) cmd_down_all "${1:-}"; [ "${1:-}" = --identity ] && cmd_identity_delete ;;
+    down-all) cmd_down_all "${1:-}" ;;
     *) usage ;;
   esac
 }

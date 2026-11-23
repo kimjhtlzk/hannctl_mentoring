@@ -74,7 +74,8 @@ static_cred_state() { # → STATIC_STATE(PRESENT|NONE), STATIC_METRIC 설정 (�
   local keys sec refs
   keys=$(aws iam list-access-keys --user-name "$LEGACY_USER" --query 'length(AccessKeyMetadata)' --output text 2>/dev/null || echo 0)
   sec=$(k -n "$NS" get secret legacy-aws-credentials --no-headers 2>/dev/null | wc -l | tr -d ' ')
-  refs=$(k -n "$NS" get deploy -o json | python3 -c 'import json,sys;d=json.load(sys.stdin);print(sum(1 for x in d["items"] if "legacy-aws-credentials" in json.dumps(x["spec"]["template"]["spec"])))')
+  refs=$(k -n "$NS" get deploy -o json 2>/dev/null | python3 -c 'import json,sys;d=json.load(sys.stdin);print(sum(1 for x in d["items"] if "legacy-aws-credentials" in json.dumps(x["spec"]["template"]["spec"])))' 2>/dev/null)
+  refs=${refs:-0}   # office Namespace 가 아직 없으면(인프라 생성 중) 참조 0개
   STATIC_METRIC="IAM 정적키 ${keys}개 · K8s Secret ${sec}개 · 참조 Deployment ${refs}개"
   if [ "$keys" = 0 ] && [ "$sec" = 0 ] && [ "$refs" = 0 ]; then STATIC_STATE=NONE; else STATIC_STATE=PRESENT; fi
 }
@@ -89,6 +90,11 @@ scenario_before() {
   k label ns "$NS" pod-security.kubernetes.io/enforce- pod-security.kubernetes.io/enforce-version- hannctl.io/protected- >/dev/null 2>&1
   issue_static_key
   k apply -f "$K8S/before/" >/dev/null
+  for d in office-api intruder; do   # After 에서 지정한 ServiceAccount(Pod Identity)를 지워 처음과 같은 상태로 (두 칸을 함께 지워야 한다)
+    [ -n "$(k -n "$NS" get deploy "$d" -o jsonpath='{.spec.template.spec.serviceAccountName}' 2>/dev/null)" ] &&
+      k -n "$NS" patch deploy "$d" --type=json \
+        -p '[{"op":"remove","path":"/spec/template/spec/serviceAccountName"},{"op":"remove","path":"/spec/template/spec/serviceAccount"}]' >/dev/null 2>&1
+  done
   for d in office-api intruder; do k -n "$NS" rollout status "deploy/$d" --timeout=300s >/dev/null || die "$d 기동 실패"; done
   date +%s > "$RUN_DIR/start_epoch"
   info "새 Access Key 전파 대기 (IAM 은 최종 일관성 — 약 10초)"; sleep 12
@@ -218,6 +224,9 @@ for e in events:
     d = json.loads(e["CloudTrailEvent"])
     arn = d.get("userIdentity", {}).get("arn", "")
     sid = str((d.get("requestParameters") or {}).get("secretId", ""))
+    # 거부(AccessDenied) 이벤트는 requestParameters 가 비어 있다 → 오류 메시지의 "on resource: <이름>" 에서 Secret 이름을 찾는다
+    if not sid and "hannctl/s5/" in str(d.get("errorMessage", "")):
+        sid = str(d["errorMessage"]).split("on resource: ")[-1].split(" ")[0]
     if "hannctl/s5/" not in sid:
         continue
     who = arn.split(":")[-1]                       # 계정 ID 제거: user/... 또는 assumed-role/<role>/<session>
@@ -240,11 +249,15 @@ PY
   done
   echo
   record cloudtrail_secret_access "$p" FOUND "$found" "감사: Secret 접근 → CloudTrail(신원별)" "${res#*|}"
-  head -8 "$RUN_DIR/$p/cloudtrail-getsecretvalue.txt" | sed 's/^/      /'
+  # Before(공용 키) 기록과 After(Pod 별 역할) 기록을 나란히 보여준다 (전체: cloudtrail-getsecretvalue.txt)
+  { grep "$LEGACY_USER" "$RUN_DIR/$p/cloudtrail-getsecretvalue.txt" | head -3
+    grep "assumed-role/$CLUSTER-" "$RUN_DIR/$p/cloudtrail-getsecretvalue.txt" | head -5; } | sed 's/^/      /'
 }
 
 scenario_tests() {
   local p=$1
+  # CloudTrail 조회 시작 시각: demo/before 는 Before 적용 시각, 손으로 구성한 뒤 test before 만 실행했다면 지금
+  [ "$p" = before ] && [ ! -f "$RUN_DIR/start_epoch" ] && date +%s > "$RUN_DIR/start_epoch"
   section "[$p] 1) 자격증명: 정적 키가 남아 있나, 각 Pod 는 어떤 AWS 신원인가"
   cred_tests "$p"
   section "[$p] 2) Secret 접근: 승인 Pod 는 필요한 것만, 비인가 Pod 는 AccessDenied"
@@ -335,6 +348,7 @@ scenario_status() {
   k -n "$NS" get networkpolicy 2>/dev/null
   k get clusterrolebinding,rolebinding -A -l hannctl.io/scenario=s5 2>/dev/null
   k get validatingpolicy 2>/dev/null
+  return 0   # Kyverno 설치 전(정책 CRD 없음)에도 실패로 보지 않는다 → watch 가 화면을 두 번 그리지 않음
 }
 scenario_watch() { scenario_status; }
 

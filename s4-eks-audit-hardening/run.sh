@@ -279,7 +279,7 @@ scenario_after() {
 
 scenario_status() {
   section "감사·하드닝 현황"
-  aws eks describe-cluster --name "$CLUSTER" --query '{버전:cluster.version,감사로그:cluster.logging.clusterLogging[?enabled].types[]}' --output table
+  aws eks describe-cluster --name "$CLUSTER" --query '{"버전":cluster.version,"감사로그":cluster.logging.clusterLogging[?enabled].types[]}' --output table
   k get ns audit-app other-team hannctl-audit -L pod-security.kubernetes.io/enforce,hannctl.io/protected 2>/dev/null
   k get clusterrolebinding -l hannctl.io/scenario=s4 2>/dev/null; k get rolebinding -n audit-app 2>/dev/null
   k get networkpolicy -n audit-app 2>/dev/null; k get validatingpolicy 2>/dev/null; k get cronjob,job -n hannctl-audit 2>/dev/null
@@ -292,14 +292,14 @@ cmd_upgrade() {
   local cur target; cur=$(aws eks describe-cluster --name "$CLUSTER" --query cluster.version --output text)
   target=${1:-$(python3 -c 'import sys;a,b=sys.argv[1].split(".");print(f"{a}.{int(b)+1}")' "$cur")}
   banner "UPGRADE — EKS $cur → $target (Control Plane → 노드 그룹 → 애드온)"
-  info "약 25분 소요(비용 약 \$$(python3 -c "print(round(float('$HOURLY_USD')*0.45,2))")). 유지 시간이 넉넉한지 확인(필요 시): ./run.sh lifetime 8"
+  info "약 20분 소요(비용 약 \$$(python3 -c "print(round(float('$HOURLY_USD')*0.33,2))")). 유지 시간이 넉넉한지 확인(필요 시): ./run.sh lifetime 8"
   section "1) 사전 점검"
   ev after upgrade-01-insights -- aws eks list-insights --cluster-name "$CLUSTER" --filter categories=UPGRADE_READINESS \
     --query 'insights[].[name,insightStatus.status]' --output table
   ev after upgrade-02-nodes-before -- kubectl --context "$CLUSTER" get nodes -o wide
   [ "$(http_from_pod audit-app web http://api.audit-app.svc.cluster.local/health)" = 200 ] && ok "앱 정상(업그레이드 전)" || warn "앱 상태 확인 필요"
   timeline after "업그레이드 시작" "$cur → $target"
-  section "2) Control Plane 업그레이드 (약 8~12분, 1 minor 씩만 가능)"
+  section "2) Control Plane 업그레이드 (약 7~12분, 1 minor 씩만 가능)"
   stack_set_params KubernetesVersion="$target"
   section "3) 노드 그룹 롤링 업그레이드 (노드를 1대씩 교체, 약 10분)"
   stack_set_params NodeKubernetesVersion="$target"

@@ -1,6 +1,7 @@
-# 시나리오 3 · 취약 컨테이너 이미지의 운영 배포를 막는 DevSecOps (ReleaseSafe)
+# 시나리오 3 · 취약 컨테이너 이미지의 운영 배포를 막는 DevSecOps (ReleaseSafe) — 해설서
 
-> 🚀 **처음이라면 [START_HERE.md](START_HERE.md)** 부터 — 설치·실행·삭제를 5분 안에 따라 할 수 있다.
+> ▶ **실습은 [GUIDE.md](GUIDE.md) 하나만 보고 따라간다** (내려받기·준비도 GUIDE.md 0단계에 있다).
+> 이 문서는 시나리오의 배경·원리·직접 구성 방법·발표 포인트를 담은 해설서다.
 
 > **한 줄 요약**
 > 개발자가 **취약한 이미지**를 만들어도
@@ -12,7 +13,7 @@
 |---|---|
 | 난이도 | ★★½ (2.5/5). 흐름이 직관적이고 성공/실패가 분명해 시연이 안정적이다 |
 | 핵심 기술 | **CodeBuild**(CI) + **Trivy**(이미지 취약점 검사), **ECR**(신뢰 레지스트리, 태그 불변), **Kyverno**(신뢰 레지스트리·Pod 보안 정책), **PSA**, 이미지 **digest** 배포 |
-| 소요 시간 | 처음 `demo` 약 **17~20분**(실측 17분: 인프라 생성 13분 + CI 빌드 3회 약 2분 + 테스트). 이후 재실행 약 5분 |
+| 소요 시간 | 처음 `demo` 약 **17~20분**(실측 17~19분: 인프라 생성·Kyverno 설치 약 13~15분 + CI 빌드 3회 약 2분 + 테스트). 이후 재실행 약 5분 |
 | 예상 비용 | 약 **$0.22/시간**(≈310원). EKS + Graviton 노드 1대(온디맨드) + NAT, CodeBuild는 빌드한 분만 과금. 처음 정한 유지 시간(기본 6시간)이 지나면 자동 삭제 (9장 비용표 참고) |
 | 과정 요구사항 연결 | **공급망 보안**(CI 이미지 스캔, Critical·High 배포 차단, 신뢰 레지스트리만 허용) + **정책 기반 통제**(privileged/root/hostPath 차단) |
 
@@ -41,7 +42,7 @@
 
 | # | 개선(통제) | 영역 | Before → After (실측) | 왜 중요한가 |
 |---|---|---|---|---|
-| 1 | CI 보안 게이트 (`GATE=on`) | 공급망 보안 | 취약 빌드 `SUCCEEDED` → `FAILED` (`GATE_RESULT=BLOCKED`, CRITICAL 6 · HIGH 16), ECR `PRESENT` → `ABSENT` | 발견에서 끝나지 않고 **운영 경로를 끊는다** |
+| 1 | CI 보안 게이트 (`GATE=on`) | 공급망 보안 | 취약 빌드 `SUCCEEDED` → `FAILED` (`GATE_RESULT=BLOCKED`, 2026-11 실측 CRITICAL 6 · HIGH 16 — 건수는 Trivy DB 갱신에 따라 달라진다), ECR `PRESENT` → `ABSENT` | 발견에서 끝나지 않고 **운영 경로를 끊는다** |
 | 2 | 검증된 이미지 digest 배포 + 추적 정보 | 공급망 보안 · 배포 운영 | 운영 이미지 `v1.0.0/vuln` → `v1.1.0/secure`(Trivy 0건), 추적 `MISSING` → `LINKED` | 운영 이미지가 **검사한 바로 그 이미지**임을 보장, 감사 대응 |
 | 3 | 신뢰 레지스트리 정책 (Kyverno) | K8s 정책 통제 | 외부 이미지 `ALLOWED` → `DENIED`, 승인 ECR 이미지는 `ALLOWED` 유지 | CI를 **우회한 배포**까지 차단 |
 | 4 | PSA restricted + Kyverno baseline | K8s 정책 통제 | privileged · hostPath · root Pod `ALLOWED` → `DENIED` | 위험 설정을 **만들어지기 전에** 거부 |
@@ -60,9 +61,9 @@ cd s3-devsecops-image-gate
 ./run.sh down                      # 끝나면 전부 삭제 (잊어도 유지 시간(기본 6시간)이 지나면 자동 삭제)
 ```
 
-- 끝나면 `evidence/latest/REPORT.html`이 열린다(점수, Before→After 비교, 타임라인).
-- 진행 중에 **다른 터미널에서 `./run.sh watch`** 를 실행하면 실행 중인 이미지, 배포 이력, ECR 이미지 목록, CI 빌드 상태를 실시간으로 볼 수 있다.
-- 처음에는 내 AWS 계정에 관리자로 콘솔 로그인할 수 있으면 된다(브라우저 로그인 → 작업용 역할 `hannctl-operator-role` 자동 생성, Access Key 불필요). python3·AWS CLI·kubectl·helm 등은 **없는 것만 자동 설치**된다(`tools/install-tools.sh`). **로컬 Docker는 필요 없다**(빌드는 AWS CodeBuild에서 한다).
+- 끝나면 `evidence/latest/REPORT.html`이 열린다(점수, Before→After 비교, 타임라인). 열리지 않으면 [START_HERE.md](START_HERE.md) 5단계를 참고한다.
+- 진행 중에 **다른 터미널에서 `./run.sh watch`**(새 터미널에서도 이 폴더로 `cd` 한 뒤)를 실행하면 실행 중인 이미지, 배포 이력, ECR 이미지 목록, CI 빌드 상태, 정책 목록을 실시간으로 볼 수 있다. `demo` 를 시작하자마자 켜도 된다 — 클러스터가 만들어지는 동안(처음 실행 시 약 10~15분)은 `⏳ EKS 클러스터 hannctl-s3-release 준비 대기 중` 화면을 보여 주다가, 준비되면 자동으로 관찰 화면으로 바뀐다. 끝낼 때는 `Ctrl+C`.
+- 처음 한 번 필요한 것: 내 AWS 계정에 관리자로 콘솔 로그인할 수 있으면 된다(브라우저 로그인 → 작업용 역할 `hannctl-operator-role` 자동 생성, Access Key 불필요). python3·AWS CLI·kubectl·helm 등은 **없는 것만 자동 설치**된다(`tools/install-tools.sh`). **로컬 Docker는 필요 없다**(빌드는 AWS CodeBuild에서 한다). 자세한 준비는 [START_HERE.md](START_HERE.md) 참고.
 
 ---
 
@@ -194,7 +195,7 @@ sequenceDiagram
   participant CB as CodeBuild(CI)
   participant E as ECR
   participant K as EKS
-  R->>K: (최초) 스택 배포 ~13분, Kyverno 설치
+  R->>K: (최초) 스택 배포 ~12~14분, Kyverno 설치
   Note over R,K: BEFORE — 게이트 꺼짐, 정책 없음
   R->>CB: 취약 소스 빌드 (GATE=off)
   CB->>E: Trivy 가 HIGH/CRITICAL 발견했지만 그대로 Push ⚠️
@@ -216,8 +217,8 @@ sequenceDiagram
 
 | 단계 | 설정 (파일 · 핵심 줄) | 결과 (화면에 보이는 값) | 배운 점 |
 |---|---|---|---|
-| **BEFORE** | `cfn/stack.yaml` buildspec 의 `GATE: "off"` (run.sh 가 빌드 시 덮어씀) · 정책 파일 미적용 | `GATE_RESULT=SKIPPED (발견 N건 무시)` → 빌드 **SUCCEEDED**, ECR `PRESENT`, 운영 `RUNNING`, 외부 이미지·privileged `ALLOWED` | 검사를 했다 ≠ 막았다. 결과를 보고 **멈추는 장치**가 없으면 취약 이미지는 그대로 운영까지 간다 |
-| **개선 1** CI 게이트 | buildspec: `if [ "$GATE" = "on" ] && [ "$FOUND" -gt 0 ]; then … exit 1` → 실패하면 아래 `docker push` 줄까지 **가지 않음** | 빌드 **FAILED**, 로그 `GATE_RESULT=BLOCKED (HIGH/CRITICAL N건)`, `VULN CRITICAL CVE-… Django 2.2`, ECR 태그 **ABSENT** | 게이트는 "실패 시 다음 단계가 실행되지 않는 구조"다. 그래서 "저장소에 없다"까지 증명할 수 있다 |
+| **BEFORE** | `cfn/stack.yaml` buildspec 의 `GATE: "off"` (run.sh 가 빌드 시 덮어씀) · 정책 파일 미적용 | `GATE_RESULT=SKIPPED (GATE=off, HIGH/CRITICAL N 건)` → 빌드 **SUCCEEDED**, ECR `PRESENT`, 운영 `RUNNING`, 외부 이미지·privileged `ALLOWED` | 검사를 했다 ≠ 막았다. 결과를 보고 **멈추는 장치**가 없으면 취약 이미지는 그대로 운영까지 간다 |
+| **개선 1** CI 게이트 | buildspec: `if [ "$GATE" != "on" ]; then R=SKIPPED; elif [ "$FOUND" -gt 0 ]; then R=BLOCKED; …` 다음 `R=BLOCKED` 이면 `exit 1` → 실패하면 아래 `docker push` 줄까지 **가지 않음** | 빌드 **FAILED**, 로그 `GATE_RESULT=BLOCKED (GATE=on, HIGH/CRITICAL N 건)` → `ECR Push 중단`, `VULN CRITICAL CVE-… Django 2.2`, ECR 태그 **ABSENT** | 게이트는 "실패 시 다음 단계가 실행되지 않는 구조"다. 그래서 "저장소에 없다"까지 증명할 수 있다 |
 | **개선 2** 검증된 배포 | `app/Dockerfile`: `VARIANT=secure`(취약 라이브러리 미설치, `apk upgrade`, `pip` 제거) · run.sh: `kubectl set image …@sha256:<digest>` + `annotate hannctl.io/git-commit, image-digest, ci-build-id` | 빌드 **SUCCEEDED**(`critical=0 high=0`), `/version` = **v1.1.0/secure**, `rollout history`에 `CI <빌드ID> · gate PASSED` | 태그는 바뀔 수 있지만 digest는 내용 그 자체다. 운영 이미지가 **검사한 바로 그 이미지**임을 보장하고 감사에 답할 수 있다 |
 | **개선 3** Admission 정책 | `k8s/policies/trusted-registry.yaml`(ValidatingPolicy): `object.spec.containers.all(c, c.image.startsWith('<계정>.dkr.ecr.<리전>.amazonaws.com/hannctl-s3-'))` · `kyverno-baseline.yaml` · ns 라벨 `pod-security.kubernetes.io/enforce=restricted` | 외부 이미지 → `DENIED [hannctl/Kyverno] 승인된 레지스트리…`, 승인 ECR 이미지 → `ALLOWED`, privileged/hostPath/root → `DENIED`, 기존 Pod는 Running | CI 게이트는 CI를 **거친 것**만 지킨다. 클러스터 입구 정책이 있어야 **우회 경로**까지 막힌다(2단계 방어) |
 | **AFTER** | Before와 **같은 테스트** 재실행 | 위험 경로는 모두 차단, 정상 경로(서비스 200, 승인 이미지 허용)는 유지 | 같은 조건에서 비교해야 개선이라고 말할 수 있다 |
@@ -238,7 +239,7 @@ sequenceDiagram
 | 승인된 ECR 이미지 | ALLOWED | **ALLOWED** | 정상 배포는 막지 않음 |
 | privileged / hostPath / root Pod | ALLOWED ⚠️ | **DENIED** | 위험 설정 차단 |
 
-> **키트 검증 실행의 실측값(2026-11, Trivy 0.76.2)**: 취약 이미지 **CRITICAL 6 · HIGH 16 = 22건**(모두 Django 2.2, 예: CVE-2019-14234), 정상 이미지 **0건**, CI 빌드 1회 **약 40초**(대기 포함), 위험 시나리오 6건(취약 빌드, ECR 저장, 외부 이미지, privileged, hostPath, root) **모두 차단**, 정상 경로 4건(정상 빌드, 서비스 200, 새 버전, 승인 이미지) **모두 유지**.
+> **실측값 예시(2026-11, Trivy 0.76.2)**: 취약 이미지 **CRITICAL 6 · HIGH 16 = 22건**(모두 Django 2.2, 예: CVE-2019-14234), 정상 이미지 **0건**, CI 빌드 1회 **약 40초**(대기 포함), 위험 시나리오 6건(취약 빌드, ECR 저장, 외부 이미지, privileged, hostPath, root) **모두 차단**, 정상 경로 4건(정상 빌드, 서비스 200, 새 버전, 승인 이미지) **모두 유지**.
 > 취약점 DB는 매일 갱신되므로 건수는 실행 시점마다 조금씩 다를 수 있다. 발표에는 **자기 실행의 `REPORT.html` 값**을 쓴다.
 
 ---
@@ -261,7 +262,10 @@ eval "$(./run.sh kubeconfig)"      # 이 시나리오 전용 kubeconfig
 | 8 | 정책 목록 | `kubectl get validatingpolicy` |
 | 9 | 외부 이미지 직접 시도 | `kubectl apply -n release --dry-run=server -f k8s/attack/untrusted-registry-pod.yaml` |
 | 10 | Namespace 보안 라벨 | `kubectl get ns release --show-labels` |
-| 11 | (참고) ECR 기본 스캔 결과 | `aws ecr describe-image-scan-findings --repository-name hannctl-s3-release-api --image-id imageTag=<취약태그>` |
+| 11 | (참고) ECR 기본 스캔 결과 | `aws ecr describe-image-scan-findings --repository-name hannctl-s3-release-api --image-id imageTag=$(cat evidence/latest/vuln_tag)` → `"status": "COMPLETE"` 인데 `findings` 가 비어 있다. ECR 기본 스캔은 OS 패키지 중심이라 Trivy 가 찾은 Django 취약점을 잡지 못한다(7장 "한계") |
+
+> 3번의 `<ID>` 는 바로 앞 명령이 출력한 `ids` 중 하나(맨 위가 가장 최근 빌드)다. 한 번에 보려면 `aws codebuild batch-get-builds --ids $(aws codebuild list-builds-for-project --project-name hannctl-s3-ci --query 'ids[0]' --output text) --query 'builds[0].buildStatus'`.
+> 9번은 After 상태이므로 `admission webhook "vpol.validate.kyverno.svc-fail" denied the request: … [hannctl/Kyverno] 승인된 레지스트리(…/hannctl-s3-*) 이미지만 허용됩니다.` 가 나와야 정상이다.
 
 ---
 
@@ -269,32 +273,72 @@ eval "$(./run.sh kubeconfig)"      # 이 시나리오 전용 kubeconfig
 
 `run.sh`는 아래 과정을 **순서대로 대신 실행**해 주는 스크립트일 뿐이다. 한 번은 손으로 따라 해 보면 "CloudFormation이 무엇을 만들고, CI → ECR → EKS가 어떻게 이어지는지"가 확실히 보인다.
 
-> 직접 만든 환경도 `./run.sh test after`, `./run.sh score`, `./run.sh down`으로 그대로 검증·채점·삭제할 수 있다(스택 이름과 태그만 같게 만들면 된다).
+> 직접 만든 환경도 `./run.sh test before`, `./run.sh test after`, `./run.sh score`, `./run.sh down`으로 그대로 검증·채점·삭제할 수 있다(스택 이름과 태그만 같게 만들면 된다).
+> 6절의 명령은 모두 **이 시나리오 폴더에서, 한 터미널로 순서대로** 실행한다. 앞에서 만든 변수·함수(`MY_ARN`, `EXEC_ROLE` 등)를 뒤에서 그대로 쓰기 때문이다. 터미널을 새로 열었다면 6-1·6-2 를 다시 실행하고(6-2 는 스택이 이미 있으면 `EXEC_ROLE` 만 다시 읽는다), 그 뒤 절에서 만든 변수·함수 정의 줄도 다시 실행한다.
+> macOS 의 zsh 라면 먼저 `setopt interactivecomments` 를 실행한다(명령 뒤 `# 설명` 주석 때문, [START_HERE.md](START_HERE.md) 맨 위 참고).
+
+### 6-0. 작업용 역할 스택 — `cfn/hannctl-identity.yaml` (계정에 한 번만)
+
+`run.sh` 는 처음 실행할 때 이 스택을 자동으로 만든다(`./run.sh doctor` 를 이미 했다면 있으므로 건너뛰어도 된다).
+이 스택이 만드는 IAM 역할 `hannctl-operator-role` 이 이후 모든 작업의 권한이 된다. 역할이 아직 없으므로 이 단계만 **로그인한 자격 증명**으로 실행한다.
+
+```bash
+export AWS_REGION=ap-northeast-2
+LOGIN=hannctl-login     # aws login 으로 받은 프로필. 아직 로그인 전이면: aws login --profile hannctl-login (브라우저 없는 원격 환경은 --remote 추가)
+# 이미 있으면 그대로 쓰고, 없을 때만 만든다 (약 1분, 비용 0원)
+aws cloudformation describe-stacks --stack-name hannctl-identity --profile "$LOGIN" >/dev/null 2>&1 && echo "hannctl-identity 있음 → 그대로 사용" \
+  || aws cloudformation deploy --stack-name hannctl-identity --template-file cfn/hannctl-identity.yaml \
+       --capabilities CAPABILITY_NAMED_IAM --profile "$LOGIN" \
+       --tags Project=hannctl hannctl:role=identity hannctl:est-usd-per-hour=0 hannctl:managed-by=hannctl-cli
+# 프로필 hannctl = "로그인 자격 증명으로 hannctl-operator-role 로 전환" (CLI 가 임시 자격 증명을 알아서 받고 갱신한다)
+ACCT=$(aws sts get-caller-identity --profile "$LOGIN" --query Account --output text)
+aws configure set role_arn "arn:aws:iam::$ACCT:role/hannctl-operator-role" --profile hannctl
+aws configure set source_profile "$LOGIN" --profile hannctl
+aws configure set role_session_name hannctl-cli --profile hannctl
+aws configure set region ap-northeast-2 --profile hannctl
+aws sts get-caller-identity --profile hannctl --query Arn --output text   # → arn:aws:sts::<계정>:assumed-role/hannctl-operator-role/hannctl-cli
+```
+
+> - **CloudShell** 은 이미 로그인되어 있다: `LOGIN` 줄과 `--profile "$LOGIN"` 을 빼고 실행하고, `source_profile` 줄 대신 `aws configure set credential_source EcsContainer --profile hannctl` 을 쓴다.
+> - **root 로 로그인했다면** 역할 전환이 되지 않는다(AWS 제한). 이때는 `./run.sh doctor` 를 실행해 콘솔 사용자 `hannctl-admin` 을 만들고 그 사용자로 다시 로그인한다.
+> - root 로그인 후 만든 **`hannctl-admin` 으로 로그인했다면** 이 스택은 이미 있고, `hannctl-admin` 에는 스택을 조회·생성할 권한이 없다. 스택을 조회·생성하는 `aws cloudformation …` 명령만 건너뛰고 나머지 줄은 그대로 실행한다.
+> - 역할을 만든 직후에는 전환이 몇 초 늦을 수 있다. 마지막 줄이 오류면 10초 뒤 다시 실행한다.
+
+**콘솔로 할 때**: CloudFormation → 스택 생성 → "템플릿 파일 업로드" → `cfn/hannctl-identity.yaml` → 스택 이름 `hannctl-identity` → 태그 `Project=hannctl`, `hannctl:role=identity` 추가 → "IAM 리소스 생성 승인" 체크. 프로필 설정(`ACCT=` 줄부터 끝까지)은 위와 같다.
 
 ### 6-1. 준비 — 내 정보 확인
 
 ```bash
-eval "$(./run.sh kubeconfig)"    # 작업용 역할 hannctl-operator-role 로 작업 (AWS_PROFILE=hannctl, 처음이면 먼저 ./run.sh doctor)
+eval "$(./run.sh kubeconfig)"    # 작업용 역할 hannctl-operator-role 로 작업 (AWS_PROFILE=hannctl — 6-0 에서 만든 프로필)
 export AWS_REGION=ap-northeast-2
-MY_ARN=$(aws sts get-caller-identity --query Arn --output text)   # 클러스터 관리자로 등록할 나 (= hannctl-operator-role)
-MY_IP=$(curl -s https://checkip.amazonaws.com)/32                  # EKS API 에 접속을 허용할 내 IP
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+# 클러스터 관리자로 등록할 나 (= hannctl-operator-role). sts 가 주는 assumed-role 세션 ARN 을 IAM 역할 ARN 으로 바꾼다
+MY_ARN=$(aws sts get-caller-identity --query Arn --output text | sed -E 's#:sts::([0-9]+):assumed-role/([^/]+)/.*#:iam::\1:role/\2#')
+MY_IP=$(curl -s https://checkip.amazonaws.com)/32                  # EKS API 에 접속을 허용할 내 IP
 echo "$MY_ARN  $MY_IP  $ACCOUNT"
+#   → arn:aws:iam::<계정>:role/hannctl-operator-role  <내 IP>/32  <계정>
 ```
 
-> assumed-role ARN(`arn:aws:sts::…:assumed-role/역할/세션`)이면 `arn:aws:iam::<계정>:role/역할` 형태로 바꿔서 쓴다.
+> - `aws sts get-caller-identity` 는 `arn:aws:sts::<계정>:assumed-role/hannctl-operator-role/hannctl-cli` 같은 **세션 ARN** 을 돌려준다. EKS Access Entry 에는 IAM 역할 ARN(`arn:aws:iam::<계정>:role/역할`)만 등록할 수 있어서 위 `sed` 로 바꾼다. `MY_ARN` 이 `arn:aws:sts::` 로 시작하면 6-3 의 스택 생성이 실패하므로 출력 형태를 확인한다.
+> - `eval "$(./run.sh kubeconfig)"` 는 프로필 `hannctl`(6-0 또는 `./run.sh doctor` 가 만든다)을 쓰게 한다. `The config profile (hannctl) could not be found` 가 나오면 6-0 을 먼저 한다.
 
-### 6-2. 공통 안전장치 스택 (계정에 한 번만)
+### 6-2. 공통 안전장치 스택 — `cfn/hannctl-finops-guard.yaml` (계정에 한 번만)
+
+`./run.sh demo`(또는 `up`)를 한 번이라도 실행했다면 이 스택은 이미 있다. 아래 첫 명령은 **스택이 없을 때만** 만들고, 있으면 그대로 둔다. 여러 시나리오가 함께 쓰는 공통 스택이라, 이미 있는 스택에 `deploy` 를 다시 실행하면 다른 실습의 자동 삭제·월 상한 설정까지 바뀔 수 있다.
 
 ```bash
-aws cloudformation deploy --stack-name hannctl-finops-guard \
-  --template-file cfn/hannctl-finops-guard.yaml --capabilities CAPABILITY_NAMED_IAM \
-  --tags Project=hannctl hannctl:role=guard
+# 이미 있으면(./run.sh demo·up 을 한 번이라도 실행했다면 있다) 만들지 않고 건너뛴다
+aws cloudformation describe-stacks --stack-name hannctl-finops-guard --query 'Stacks[0].StackStatus' --output text 2>/dev/null ||
+  aws cloudformation deploy --stack-name hannctl-finops-guard \
+    --template-file cfn/hannctl-finops-guard.yaml --capabilities CAPABILITY_NAMED_IAM \
+    --tags Project=hannctl hannctl:role=guard hannctl:managed-by=hannctl-cli
+#   → 이미 있으면 CREATE_COMPLETE 한 줄만 나온다. 없으면 1~2분 뒤 "Successfully created/updated stack"
 EXEC_ROLE=$(aws cloudformation describe-stacks --stack-name hannctl-finops-guard \
   --query "Stacks[0].Outputs[?OutputKey=='CfnExecRoleArn'].OutputValue" --output text)
+echo "$EXEC_ROLE"    # → arn:aws:iam::<계정>:role/hannctl-cfn-exec-role
 ```
 
-**콘솔로 할 때**: CloudFormation → 스택 생성 → "템플릿 파일 업로드" → `cfn/hannctl-finops-guard.yaml` → 스택 이름 `hannctl-finops-guard` → "IAM 리소스 생성 승인" 체크.
+**콘솔로 할 때**(스택이 없을 때만): CloudFormation → 스택 생성 → "템플릿 파일 업로드" → `cfn/hannctl-finops-guard.yaml` → 스택 이름 `hannctl-finops-guard` → 태그 `Project=hannctl`, `hannctl:role=guard`, `hannctl:managed-by=hannctl-cli` 추가 → "IAM 리소스 생성 승인" 체크.
 
 ### 6-3. 시나리오 인프라 스택 — `cfn/stack.yaml`
 
@@ -307,10 +351,13 @@ aws cloudformation deploy --stack-name hannctl-s3-release \
   --tags Project=hannctl hannctl:scenario=s3 hannctl:lifetime-hours=6 hannctl:est-usd-per-hour=0.22
 ```
 
-**콘솔로 할 때**: 템플릿 `cfn/stack.yaml` 업로드 → 스택 이름 `hannctl-s3-release` → 파라미터 `DeployerPrincipalArn`, `EndpointAllowedCidr` 입력 → **"권한 – IAM 역할"에서 `hannctl-cfn-exec-role` 선택** → 태그 4개(`Project=hannctl`, `hannctl:scenario=s3`, `hannctl:lifetime-hours=6`, `hannctl:est-usd-per-hour=0.22`) 추가 → 생성.
-**이벤트** 탭을 보면 VPC, ECR, S3 버킷, CodeBuild 프로젝트(1~2분)가 먼저 만들어지고, 이어서 EKS(약 10분) → 노드 그룹 → 애드온 순서로 생성된다.
+`Waiting for stack create/update to complete` 가 나온 뒤 **약 12~14분** 동안 출력 없이 기다리다가 `Successfully created/updated stack - hannctl-s3-release` 가 나오면 끝난 것이다. 실패하면 콘솔 CloudFormation → `hannctl-s3-release` → **이벤트** 탭에서 `CREATE_FAILED` 줄의 이유를 확인하고, `./run.sh down` 으로 지운 뒤 다시 만든다.
+
+**콘솔로 할 때**: 템플릿 `cfn/stack.yaml` 업로드 → 스택 이름 `hannctl-s3-release` → 파라미터 `DeployerPrincipalArn`(6-1 의 `MY_ARN`), `EndpointAllowedCidr`(6-1 의 `MY_IP`) 입력 → **"권한 – IAM 역할"에서 `hannctl-cfn-exec-role` 선택** → 태그 4개(`Project=hannctl`, `hannctl:scenario=s3`, `hannctl:lifetime-hours=6`, `hannctl:est-usd-per-hour=0.22`) 추가 → 생성.
+**이벤트** 탭을 보면 VPC·서브넷, ECR, S3 버킷, CodeBuild 프로젝트, NAT(1~2분)가 먼저 만들어지고, 이어서 EKS 컨트롤 플레인 `EksCluster`(약 9분) → Access Entry·애드온 `vpc-cni`/`kube-proxy` → 노드 그룹(약 2분) → 애드온 `coredns`/`metrics-server` 순서로 생성된다.
 
 > 💡 실행 역할(`hannctl-cfn-exec-role`)을 지정해야 자동 삭제(janitor)와 `./run.sh down`이 이 스택을 지울 수 있다.
+> 태그 `hannctl:lifetime-hours=6`은 "만든 시각부터 6시간 뒤 자동 삭제"라는 뜻이다.
 > CodeBuild 의 buildspec(빌드 → Trivy → 게이트 → Push)은 `cfn/stack.yaml` 안 `CiProject` 에 그대로 들어 있다. 콘솔 CodeBuild → `hannctl-s3-ci` → "빌드 세부 정보"에서도 볼 수 있다.
 
 ### 6-4. EKS 접속 + 기본 구성
@@ -333,47 +380,111 @@ REPO=$(out RepoUri); BUCKET=$(out SourceBucket)
 ### 6-5. BEFORE — 위험 재현 (게이트 꺼짐 + 정책 없음)
 
 ```bash
-# ① 소스 업로드 (zip 명령 없이 python 으로 → OS 무관)
-(cd app && python3 -m zipfile -c ../source.zip Dockerfile app.py trivy_summary.py)
-aws s3 cp source.zip "s3://$BUCKET/source.zip"
+# ① 소스 업로드 — app/ 을 zip 으로 묶어 소스 버킷에 올린다 (zip 명령 없이 python 으로 → OS 무관, 임시 파일은 .build/ 아래)
+mkdir -p .build
+(cd app && python3 -m zipfile -c ../.build/source.zip Dockerfile app.py trivy_summary.py)
+aws s3 cp .build/source.zip "s3://$BUCKET/source.zip"
+
+# CI 빌드 1회 = 시작 → 끝날 때까지 대기 → 결과와 핵심 로그 출력 (아래에서 3번 쓰므로 함수로 둔다)
+ci() {  # 사용법: ci VARIANT GATE IMAGE_TAG APP_VERSION
+  BUILD=$(aws codebuild start-build --project-name hannctl-s3-ci --query build.id --output text \
+    --environment-variables-override name=VARIANT,value=$1 name=GATE,value=$2 name=IMAGE_TAG,value=$3 name=APP_VERSION,value=$4 name=GIT_COMMIT,value=manual)
+  echo "빌드 시작: $BUILD (1분 정도 걸린다)"
+  while [ "$(aws codebuild batch-get-builds --ids "$BUILD" --query 'builds[0].buildStatus' --output text)" = IN_PROGRESS ]; do sleep 10; done
+  sleep 10   # CloudWatch 로그 반영 대기
+  aws codebuild batch-get-builds --ids "$BUILD" --query 'builds[0].buildStatus' --output text
+  LOG=$(aws logs filter-log-events --log-group-name /aws/codebuild/hannctl-s3-ci --log-stream-names "${BUILD#*:}" \
+    --query 'events[].message' --output text | tr '\t' '\n')
+  echo "$LOG" | grep -E '^(TRIVY_SUMMARY|GATE_RESULT|ECR Push|IMAGE_DIGEST)'
+  echo "$LOG" | grep '^VULN' | head -3
+}
 
 # ② 취약 버전 빌드 — GATE=off (Trivy 는 실행하지만 결과를 무시)
-TAG=v1.0.0-vuln-manual
-aws codebuild start-build --project-name hannctl-s3-ci --environment-variables-override \
-  name=VARIANT,value=vuln name=GATE,value=off name=IMAGE_TAG,value=$TAG name=APP_VERSION,value=v1.0.0
-#   → 1분쯤 뒤 콘솔/CLI 에서 SUCCEEDED, 로그에 "TRIVY_SUMMARY critical=6 high=16", "GATE_RESULT=SKIPPED"
-aws ecr describe-images --repository-name hannctl-s3-release-api --image-ids imageTag=$TAG --query 'imageDetails[0].imageDigest'
-#   → "sha256:…"   (취약 이미지가 저장소에 들어감 = 위험)
+ci vuln off v1.0.0-vuln-manual v1.0.0
+#   → SUCCEEDED
+#     TRIVY_SUMMARY critical=<C> high=<H>
+#     GATE_RESULT=SKIPPED (GATE=off, HIGH/CRITICAL <C+H> 건)
+#     IMAGE_DIGEST=sha256:…
+#     VULN CRITICAL CVE-… Django 2.2 -> fixed …        (Django 2.2 취약점. 건수는 Trivy 취약점 DB 갱신에 따라 달라진다)
+aws ecr describe-images --repository-name hannctl-s3-release-api --image-ids imageTag=v1.0.0-vuln-manual \
+  --query 'imageDetails[0].imageDigest' --output text
+#   → sha256:…   (취약 이미지가 저장소에 들어감 = 위험)
 
 # ③ 운영 배포 (태그로)
-sed "s#__IMAGE__#$REPO:$TAG#" k8s/base/release-api.yaml | kubectl apply -f -
+sed "s#__IMAGE__#$REPO:v1.0.0-vuln-manual#" k8s/base/release-api.yaml | kubectl apply -f -
 kubectl -n release rollout status deploy/release-api
-kubectl -n release exec deploy/release-api -- python3 /app/app.py get http://release-api/version
-#   → {"version": "v1.0.0", "variant": "vuln", …}   (취약 이미지가 운영 중 = 위험)
+# Service 를 방금 만들었으면 노드에 연결 규칙이 반영되기까지 몇 초 걸릴 수 있다 → 응답이 올 때까지 다시 시도
+until kubectl -n release exec deploy/release-api -- python3 /app/app.py get http://release-api/version 2>/dev/null; do sleep 3; done
+#   → {"service": "release-api", "version": "v1.0.0", "variant": "vuln", …}   (취약 이미지가 운영 중 = 위험)
 
 # ④ 클러스터 입구 시험
 kubectl apply -n release --dry-run=server -f k8s/attack/untrusted-registry-pod.yaml
 kubectl apply -n release --dry-run=server -f k8s/attack/privileged-pod.yaml
 #   → 둘 다 "created (server dry run)"   (외부 이미지·특권 Pod 허용 = 위험)
+
+# ⑤ Before 상태 기록 (새 증적 폴더에 Before 테스트 결과를 남긴다)
+./run.sh test before
 ```
+
+Before 상태를 채점용 테스트로도 기록해 둔다. `./run.sh test before` 는 클러스터 구성은 바꾸지 않고 **지금 상태 그대로** demo 와 같은 테스트를 실행해, 새 증적 폴더(`evidence/run-<시각>`, `evidence/latest` 가 이 폴더를 가리킨다)에 Before 결과를 기록한다. 이 기록이 있어야 6-7 채점의 "문제 재현(Before)" 항목과 보고서의 Before→After 비교가 채워진다.
+CI 항목은 CodeBuild 빌드 이력에서 가장 최근의 해당 빌드(Before: `VARIANT=vuln GATE=off`)를 찾아 결과·로그를 증적 폴더에 기록한다.
 
 ### 6-6. AFTER — 통제를 하나씩 적용하고 바로 확인
 
-| 순서 | 적용 | 바로 확인 | 기대 결과 |
-|---|---|---|---|
-| ① 게이트 켜기 | `aws codebuild start-build --project-name hannctl-s3-ci --environment-variables-override name=VARIANT,value=vuln name=GATE,value=on name=IMAGE_TAG,value=v1.0.1-vuln-manual name=APP_VERSION,value=v1.0.1` | `aws codebuild batch-get-builds --ids <빌드ID> --query 'builds[0].buildStatus'`<br>`aws ecr describe-images --repository-name hannctl-s3-release-api --image-ids imageTag=v1.0.1-vuln-manual` | `FAILED`, 로그 `GATE_RESULT=BLOCKED (… 22 건)`<br>ECR: `ImageNotFoundException` (Push 안 됨) |
-| ② 검증된 이미지 배포 | 같은 명령에 `VARIANT=secure GATE=on IMAGE_TAG=v1.1.0-secure-manual APP_VERSION=v1.1.0` → 성공하면<br>`DIGEST=$(aws ecr describe-images … imageTag=v1.1.0-secure-manual --query 'imageDetails[0].imageDigest' --output text)`<br>`kubectl -n release set image deploy/release-api app=$REPO@$DIGEST`<br>`kubectl -n release annotate deploy/release-api hannctl.io/git-commit=manual hannctl.io/image-digest=$DIGEST hannctl.io/ci-build-id=<빌드ID>` | `/version` 조회, `kubectl -n release rollout history deploy/release-api` | `SUCCEEDED`(`critical=0 high=0`, `GATE_RESULT=PASSED`)<br>`"version": "v1.1.0", "variant": "secure"` |
-| ③ 클러스터 입구 정책 | `kubectl label ns release pod-security.kubernetes.io/enforce=restricted hannctl.io/protected=true`<br>`kubectl apply -f k8s/policies/kyverno-baseline.yaml`<br>`sed "s#__REGISTRY__#$ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com#g" k8s/policies/trusted-registry.yaml \| kubectl apply -f -` | 6-5 ④의 dry-run 두 줄 다시 실행 | 외부 이미지: `[hannctl/Kyverno] 승인된 레지스트리(…/hannctl-s3-*) 이미지만 허용됩니다.`<br>privileged: `violates PodSecurity "restricted:latest"`<br>`kubectl -n release get pods` → 기존 Pod 는 계속 Running |
+```bash
+# ① CI 게이트 켜기 — 같은 취약 소스를 GATE=on 으로 빌드
+ci vuln on v1.0.1-vuln-manual v1.0.1
+#   → FAILED
+#     TRIVY_SUMMARY critical=<C> high=<H>
+#     GATE_RESULT=BLOCKED (GATE=on, HIGH/CRITICAL <C+H> 건)
+#     ECR Push 중단
+aws ecr describe-images --repository-name hannctl-s3-release-api --image-ids imageTag=v1.0.1-vuln-manual
+#   → An error occurred (ImageNotFoundException) …   (Push 단계가 실행되지 않아 저장소에 없다)
+```
+
+```bash
+# ② 검증된 이미지 배포 — 패치된 소스(VARIANT=secure)를 GATE=on 으로 빌드 → digest 로 배포 + 추적 정보 기록
+ci secure on v1.1.0-secure-manual v1.1.0
+#   → SUCCEEDED
+#     TRIVY_SUMMARY critical=0 high=0
+#     GATE_RESULT=PASSED (GATE=on, HIGH/CRITICAL 0 건)
+#     IMAGE_DIGEST=sha256:…
+DIGEST=$(aws ecr describe-images --repository-name hannctl-s3-release-api --image-ids imageTag=v1.1.0-secure-manual \
+  --query 'imageDetails[0].imageDigest' --output text)
+kubectl -n release set image deploy/release-api app=$REPO@$DIGEST
+kubectl -n release annotate deploy/release-api hannctl.io/git-commit=manual hannctl.io/image-digest=$DIGEST \
+  hannctl.io/ci-build-id=${BUILD#*:} kubernetes.io/change-cause="CI ${BUILD#*:} · v1.1.0-secure-manual · gate PASSED"
+kubectl -n release rollout status deploy/release-api
+kubectl -n release exec deploy/release-api -- python3 /app/app.py get http://release-api/version
+#   → {"service": "release-api", "version": "v1.1.0", "variant": "secure", …}
+kubectl -n release rollout history deploy/release-api
+#   → 마지막 REVISION 의 CHANGE-CAUSE 가 "CI <빌드ID> · v1.1.0-secure-manual · gate PASSED"
+```
+
+```bash
+# ③ 클러스터 입구 정책 — PSA restricted 라벨 + Kyverno 정책(Pod 보안 3개 + 신뢰 레지스트리 1개)
+kubectl label ns release pod-security.kubernetes.io/enforce=restricted hannctl.io/protected=true
+kubectl apply -f k8s/policies/kyverno-baseline.yaml
+sed "s#__REGISTRY__#$ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com#g" k8s/policies/trusted-registry.yaml | kubectl apply -f -
+kubectl wait validatingpolicy --all --for=jsonpath='{.status.conditionStatus.ready}'=true --timeout=60s
+#   → validatingpolicy.policies.kyverno.io/… condition met  (4줄)
+kubectl apply -n release --dry-run=server -f k8s/attack/untrusted-registry-pod.yaml
+#   → … denied the request: … [hannctl/Kyverno] 승인된 레지스트리(…/hannctl-s3-*) 이미지만 허용됩니다.
+kubectl apply -n release --dry-run=server -f k8s/attack/privileged-pod.yaml
+#   → … violates PodSecurity "restricted:latest": privileged …
+kubectl -n release get pods
+#   → release-api Pod 2개가 그대로 Running (② 에서 교체된 이전 Pod 가 잠시 Terminating 으로 함께 보일 수 있다)
+```
 
 ### 6-7. 검증 · 채점 · 삭제는 그대로 자동으로
 
 ```bash
-./run.sh test after      # Before 와 같은 테스트 세트 실행 (클러스터 상태 기준)
-./run.sh score           # 평가표 채점 + REPORT.html
-./run.sh down            # 삭제 (S3 버킷을 비우고 스택 삭제 — 콘솔에서 지울 땐 버킷을 먼저 비울 것)
+./run.sh test after && ./run.sh score   # Before 와 같은 테스트 세트(지금 클러스터 상태 + CodeBuild 이력) → 평가표 채점 + REPORT.html
+./run.sh down                           # 삭제 (S3 버킷을 비우고 스택 삭제 — 콘솔에서 지울 땐 버킷을 먼저 비울 것)
 ```
 
-> CI 관련 채점 항목(`ci_vuln_build`, `gate_reason` 등)은 `./run.sh before` / `after` 가 빌드를 직접 돌려 기록한다. 손으로 빌드한 결과까지 채점하려면 `./run.sh after` 를 한 번 실행한다.
+> `./run.sh test after` 는 클러스터 구성을 바꾸지 않고 **직접 구성한 상태 그대로** Before 와 같은 테스트를 실행해, 가장 최근 증적 폴더(6-5 의 `test before` 가 만든 폴더)에 이어 기록한다. 그래서 `score` 가 Before·After 를 함께 채점한다. 6-5 의 `test before` 를 건너뛰면 Before 항목이 채워지지 않는다.
+> After 의 CI 항목(`ci_vuln_build`, `gate_reason`, `vuln_in_ecr`, `ci_secure_build`, `ci_evidence`)은 6-6 ①·② 에서 직접 돌린 빌드(가장 최근의 `VARIANT=vuln GATE=on`, `VARIANT=secure GATE=on`)를 CodeBuild 이력에서 찾아 채점한다.
 
 ---
 
@@ -395,13 +506,14 @@ kubectl apply -n release --dry-run=server -f k8s/attack/privileged-pod.yaml
 
 ```text
 s3-devsecops-image-gate/
-├── run.sh                     # 유일한 진입점 (demo / up / before / after / test / score / status / watch / cost / lifetime / down)
+├── run.sh                     # 유일한 진입점 (doctor / demo / up / before / after / test / score / status / watch / cost / lifetime / down)
 ├── README.md                  # 이 문서 (학습 가이드)
+├── START_HERE.md              # 처음 시작하기 (내려받기 · 준비 · 점검 · 실행 · 삭제)
 ├── RUBRIC.md / rubric.json    # 평가표 (사람용 / 자동 채점용)
 ├── cfn/
 │   ├── stack.yaml             # VPC, EKS, 노드, 애드온 + ECR, S3 소스 버킷, CodeBuild(buildspec 포함), CI 역할, 로그
 │   ├── hannctl-identity.yaml      # 작업용 역할 hannctl-operator-role (+root 로그인 시 hannctl-admin) — 자동 생성
-│   └── hannctl-finops-guard.yaml
+│   └── hannctl-finops-guard.yaml  # 공통 안전장치 (실행 역할, 자동 삭제 Lambda, 예산)
 ├── app/
 │   ├── app.py                 # 고객용 API (/version, /health)
 │   ├── Dockerfile             # VARIANT=secure | vuln
@@ -415,6 +527,16 @@ s3-devsecops-image-gate/
 └── evidence/                  # 실행마다 생성: CI 로그, admission 결과, REPORT.md/html
 ```
 
+**`cfn/` 템플릿 3개의 관계**
+
+| 템플릿 | 만드는 스택 → 주요 리소스 | 언제 만들어지나 |
+|---|---|---|
+| `hannctl-identity.yaml` | `hannctl-identity` → 작업용 역할 `hannctl-operator-role` (+root 로 로그인했을 때 콘솔 사용자 `hannctl-admin`) | `run.sh` 첫 실행 때 자동 (손으로는 6-0) |
+| `hannctl-finops-guard.yaml` | `hannctl-finops-guard` → 자동 삭제 Lambda `hannctl-janitor`, 월 예산, CloudFormation 실행 역할 `hannctl-cfn-exec-role` | 첫 `demo`/`up` 때 자동 (손으로는 6-2) |
+| `stack.yaml` | `hannctl-s3-release` → 이 시나리오의 실습 인프라 전부. `hannctl-cfn-exec-role` 로 배포되므로 guard 스택이 먼저 있어야 한다 | `demo`/`up` 때 자동 (손으로는 6-3) |
+
+> 앞의 두 스택은 계정에 하나씩만 있고 모든 시나리오가 함께 쓴다(비용 0원 수준). `./run.sh down` 은 시나리오 스택만 지우고, 공용 스택은 `./run.sh down-all`(guard) / `./run.sh down-all --identity`(identity 까지)로 지운다(9-2 참고).
+
 ---
 
 ## 9. 비용, 안전장치, 삭제 (FinOps)
@@ -427,8 +549,8 @@ s3-devsecops-image-gate/
 | ├ EKS 컨트롤 플레인 | $0.10/시간 | 클러스터가 있는 동안 고정으로 나간다 |
 | ├ 노드 1대 (t4g.medium 온디맨드, ARM) | $0.042/시간 | 선택: `HANNCTL_CAPACITY=SPOT` 이면 ARM 6종 Spot(실측 $0.025~0.035) — 약 30% 더 저렴하지만 노드가 교체될 수 있다 |
 | ├ NAT Gateway 1개 + 공인 IP | 약 $0.064/시간 | 데이터 처리량은 실습 수준이라 미미하다 |
-| └ CodeBuild (ARM small) | 빌드한 **분당 약 $0.0034** | 빌드 1회 약 35~50초. demo 1회 3번 빌드 ≈ $0.01 |
-| **demo 1회 (실측)** | 스택 생성 포함 **17분 → $0.06 (≈90원)** | 매 실행의 `REPORT.html` "비용" 섹션에 실측 소요 시간과 비용이 자동으로 기록된다 |
+| └ CodeBuild (ARM small) | 빌드한 **분당 약 $0.0034** | 빌드 1회 약 30~40초. demo 1회 3번 빌드 ≈ $0.01 |
+| **demo 1회 (실측)** | 스택 생성 포함 **17~19분 → $0.06~0.07 (≈90~100원)** | 매 실행의 `REPORT.html` "비용" 섹션에 실측 소요 시간과 비용이 자동으로 기록된다 |
 | **방치했을 때 최대** | 유지 시간 기본 6시간 × $0.22 ≈ **$1.3 (≈1,850원)** | 유지 시간이 지나면 janitor가 자동 삭제한다 |
 
 ### 9-2. 안전장치
@@ -436,12 +558,12 @@ s3-devsecops-image-gate/
 | 장치 | 내용 |
 |---|---|
 | **유지 시간** | 처음 `demo`/`up` 할 때 "몇 시간 유지할지" 정한다(기본 **6시간**, 0~24, 0=무제한). 기준은 항상 **스택 생성 시각**. 바꾸기: `./run.sh lifetime 9`(생성 후 9시간까지). 비대화형 실행이면 자동으로 6시간 |
-| **월 상한** | `Project=hannctl` 전체의 이번 달 누적 예상 비용이 **$20(≈3만원)** 에 닿으면 janitor가 hannctl 스택을 전부 삭제한다. 상한 변경/끄기: `./run.sh cap 30` / `./run.sh cap 0` ([START_HERE.md](START_HERE.md) 7단계 참고) |
+| **월 상한** | `Project=hannctl` 전체의 이번 달 누적 예상 비용이 **$20(≈2.8만원)** 에 닿으면 janitor가 hannctl 스택을 전부 삭제한다. 상한 변경/끄기: `./run.sh cap 30` / `./run.sh cap 0` ([START_HERE.md](START_HERE.md) 7단계 참고) |
 | **janitor** | `hannctl-janitor` Lambda가 10분마다 확인한다. 이름 `hannctl-*`와 태그 `Project=hannctl`을 **모두** 가진 스택만 삭제한다(S3 소스 버킷도 비운 뒤 삭제) |
 | **ECR / S3** | ECR `EmptyOnDelete` + 최근 10개만 보관, S3 소스는 1일 후 자동 만료, 퍼블릭 차단 |
 | **설계상 절감** | 노드 1대(Graviton), NAT 1개, 로그 3일 보존, EKS 연장 지원 비활성화, LoadBalancer 미사용, CodeBuild 최소 사양 |
-| **Spot (선택)** | 기본은 발표·데모 안정성을 위해 **온디맨드**다. `HANNCTL_CAPACITY=SPOT ./run.sh up`으로 바꾸면 ARM 6종(`t4g.medium, t4g.large, m6g.large, m7g.large, c6g.large, c7g.large`) 중 자리가 있는 Spot을 쓴다(서울 실측 배치 점수: t4g 2종 **1/10**, 6종 **9/10**). 키트 검증 중 Spot 재조정으로 노드가 `SchedulingDisabled`가 되고 Kyverno Pod가 `Pending`이 된 일이 실제로 있었다. 그럴 땐 `HANNCTL_CAPACITY=ON_DEMAND ./run.sh up`으로 되돌린다 |
-| **명령** | `./run.sh cost`(지금까지 비용), `./run.sh lifetime N`, `./run.sh down`(삭제), `./run.sh down-all`(공통 안전장치까지) |
+| **Spot (선택)** | 기본은 발표·데모 안정성을 위해 **온디맨드**다. `HANNCTL_CAPACITY=SPOT ./run.sh up`으로 바꾸면 ARM 6종(`t4g.medium, t4g.large, m6g.large, m7g.large, c6g.large, c7g.large`) 중 자리가 있는 Spot을 쓴다(서울 실측 배치 점수: t4g 2종 **1/10**, 6종 **9/10**). Spot 재조정으로 노드가 `SchedulingDisabled`가 되면 Kyverno Pod가 `Pending`이 되어 실습이 멈출 수 있다. 그럴 땐 `HANNCTL_CAPACITY=ON_DEMAND ./run.sh up`으로 되돌린다 |
+| **명령** | `./run.sh cost`(지금까지 비용), `./run.sh lifetime N`, `./run.sh down`(삭제), `./run.sh down-all`(공통 안전장치까지), `./run.sh down-all --identity`(작업용 역할까지) |
 
 모든 AWS 리소스는 이름이 `hannctl-`로 시작하거나 `Project=hannctl` 태그를 가진다(After 테스트의 `tag_compliance` 항목이 자동 검사).
 

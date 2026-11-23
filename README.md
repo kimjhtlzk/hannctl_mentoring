@@ -50,7 +50,7 @@ flowchart LR
 
 ## 🚀 멘티용 빠른 시작
 
-**1) 원하는 시나리오 폴더만 내려받기** (예: 시나리오 2)
+**1) 원하는 시나리오 폴더만 내려받기** (예: 시나리오 2 — git 이 없으면 압축 파일로 받는 방법이 각 폴더 `START_HERE.md` 1단계에 있다)
 
 ```bash
 git clone --depth 1 --filter=blob:none --sparse https://github.com/kimjhtlzk/hannctl_mentoring.git
@@ -58,23 +58,24 @@ cd hannctl_mentoring && git sparse-checkout set s2-saas-tenant-isolation
 cd s2-saas-tenant-isolation
 ```
 
-**2) 점검 → 실행 → 삭제**
+**2) 점검 → 실행 → 삭제** (모두 시나리오 폴더 안에서 실행한다)
 
 ```bash
 ./run.sh doctor      # 없는 도구 자동 설치 + AWS 로그인(브라우저) + 작업용 역할 준비 + 한도 점검
-./run.sh demo        # 전부 자동 (인프라 생성 포함 약 20~45분)
+./run.sh demo        # 전부 자동 (인프라 생성 포함 약 17~30분, 시나리오마다 다르다)
 ./run.sh down        # 끝나면 삭제
 ```
 
 필요한 것은 **내 AWS 계정에 관리자로 콘솔 로그인할 수 있는 것** 하나뿐이다. Access Key 발급이나 `aws configure` 는 필요 없다.
 처음 실행하면 브라우저 로그인(`aws login`)으로 임시 자격 증명을 받고, 키트가 작업용 IAM 역할 `hannctl-operator-role` 을 만들어 모든 작업을 그 역할로 한다(CloudShell 은 로그인도 생략).
 
-자세한 준비 과정(OS별 설치, 로그인 흐름)은 각 폴더의 **`START_HERE.md`**, 시나리오 설명과 학습 내용은 **`README.md`** 에 있다.
+실습은 각 폴더의 **`GUIDE.md`** 하나만 보고 따라간다(0단계 내려받기·준비부터 10단계 삭제까지, 단계별 할 일과 실제 화면). 준비 과정의 자세한 설명(OS별 설치, 로그인 흐름)과 문제 해결은 **`START_HERE.md`**, 시나리오 배경과 원리는 **`README.md`**(해설서)에 있다.
 
 | 지원 환경 | 비고 |
 |---|---|
 | macOS · Ubuntu · CentOS/Rocky · Amazon Linux | bash 와 인터넷만 있으면 된다. python3·AWS CLI·kubectl·helm 등은 **없는 것만 자동 설치**(`tools/install-tools.sh`, 있으면 건너뜀) |
 | **AWS CloudShell** | 이미 로그인되어 있고 대부분 설치되어 있어 가장 쉽다 |
+| Windows | PowerShell·명령 프롬프트에서는 실행되지 않는다 → **AWS CloudShell** 또는 리눅스 환경(WSL2 의 Ubuntu 등) 사용 |
 | Docker | **필요 없음** — 이미지 빌드는 AWS CodeBuild에서 수행 |
 
 ---
@@ -89,7 +90,7 @@ cd s2-saas-tenant-isolation
   [ 12m05s] ✔ NodeGroup                 EKS 관리형 노드 그룹 (EC2 워커 노드)
 ── [before] 1) 네트워크: 고객사 간 Pod 통신
   💡 Kubernetes 기본값은 '모든 Pod 끼리 통신 허용'. Namespace 를 나눠도 네트워크는 나뉘지 않는다
-  ✔ [before] 차단: A web → B api            기대=200   관찰=200        ← 위험이 실제로 재현됨
+  ⚠ [before] 차단: A web → B api            기대=200   관찰=200        ← 위험이 실제로 재현됨 (노란색)
   ⏳ Before 상태 유지 중, 이후 자동으로 After 로 전환 —   42s 남음
 ┏━ [개선 1/4] 네트워크 기본 차단(default-deny)
 ┃  📄 k8s/after/10-default-deny.yaml
@@ -110,11 +111,11 @@ cd s2-saas-tenant-isolation
 
 | 항목 | 값 |
 |---|---|
-| 시나리오 1개 실행 | 약 **$0.21~0.25/시간 (≈ 300~350원)**, `demo` 1회 약 **$0.15~0.25 (≈ 200~350원)** |
-| 유지 시간 | `demo` 시작 시 멘티가 정함 (기본 **6시간**, 만든 시각 기준) → 지나면 자동 삭제. 방치해도 최대 약 $1.5 (≈ 2,000원) |
+| 시나리오 1개 실행 | 약 **$0.21~0.25/시간 (≈ 290~350원)**, `demo` 1회(생성~삭제) 약 **$0.1~0.2 (≈ 130~280원)** — 시나리오별 실측은 각 README 의 비용 절 |
+| 유지 시간 | `demo` 시작 시 멘티가 정함 (기본 **6시간**, 만든 시각 기준) → 지나면 자동 삭제. 방치해도 최대 약 $1.3~1.5 (≈ 1,800~2,100원) |
 | 월 상한 | **$20 (≈ 2.8만원)** — 도달하면 모든 hannctl 스택 자동 삭제 + 새 배포 거부 |
 
-처음 실행할 때 공통 안전장치 스택 **`hannctl-finops-guard`** 가 한 번 만들어진다.
+처음 `demo`(또는 `up`)를 실행할 때 공통 안전장치 스택 **`hannctl-finops-guard`** 가 계정에 한 번 만들어지고, 이후 모든 시나리오가 함께 쓴다.
 
 | 장치 | 역할 |
 |---|---|
@@ -122,7 +123,7 @@ cd s2-saas-tenant-isolation
 | `hannctl-cfn-exec-role` | 시나리오 스택 전용 실행 역할 (IAM·S3·Secrets 권한은 `hannctl-*` 리소스로 한정) |
 | `hannctl-monthly-budget` | AWS Budget 알림 (`HANNCTL_ALERT_EMAIL=me@example.com` 지정 시 메일) |
 
-사양은 시나리오에 **필요한 만큼만** 잡았다: Graviton(ARM) 노드 1대(S1만 오토스케일링 시연을 위해 1→3대, 기본 온디맨드 — `HANNCTL_CAPACITY=SPOT` 이면 약 70% 저렴하지만 실습 중 노드가 교체될 수 있음), NAT 1개, 로그 3일 보존, LoadBalancer 미사용.
+사양은 시나리오에 **필요한 만큼만** 잡았다: Graviton(ARM) 노드 1대(S1만 오토스케일링 시연을 위해 1→3대, 기본 온디맨드 — `HANNCTL_CAPACITY=SPOT` 이면 노드 비용이 시나리오에 따라 약 30~70% 줄지만 실습 중 노드가 교체될 수 있음), NAT 1개, 로그 3일 보존, LoadBalancer 미사용.
 
 ---
 
@@ -152,7 +153,7 @@ hannctl_mentoring/
 ├── s1-shop-deploy-resilience/       ┐
 ├── s2-saas-tenant-isolation/        │  시나리오 폴더 = 멘티 1개 조
 ├── s3-devsecops-image-gate/         │  각 폴더가 독립적으로 실행된다
-├── s4-eks-audit-hardening/          │  (README · START_HERE · run.sh · cfn · k8s · lib · tools)
+├── s4-eks-audit-hardening/          │  (GUIDE · README · START_HERE · run.sh · cfn · k8s · lib · tools)
 ├── s5-secret-iam-least-privilege/   ┘
 └── _shared/                         # [관리자용] 공통 파일 원본 → sync.sh 로 각 시나리오에 복사
 ```
@@ -161,11 +162,13 @@ hannctl_mentoring/
 
 | 파일 | 내용 |
 |---|---|
-| `README.md` | **학습서**: 실무 상황, 목표, AWS·EKS 구성도, 단계별 변화와 배울 점, 직접 조회 명령, 발표 포인트, 비용, 용어 |
-| `START_HERE.md` | 처음 시작하기: 내려받기 → 준비 → 점검 → 실행 → 삭제 |
+| `README.md` | **해설서**: 실무 상황, 목표, AWS·EKS 구성도, 단계별 변화와 배울 점, 직접 조회 명령, 발표 포인트, 비용, 용어 |
+| `GUIDE.md` | **따라하기 가이드**: 점검 → 실행 → 관찰 → 결과 → 삭제를 단계별 실제 화면과 함께 (실습은 이 문서 하나로 진행) |
+| `START_HERE.md` | 준비와 명령 참고서: 내려받기·도구·로그인 준비, 명령 모음, 비용, 문제 해결 |
 | `RUBRIC.md` / `rubric.json` | 평가표 (100점 만점, 목표 88점, 자동 채점) |
 | `run.sh` | 유일한 실행 진입점 |
 | `cfn/stack.yaml` | 시나리오의 AWS 인프라 전부 (CloudFormation) |
+| `cfn/hannctl-identity.yaml` · `cfn/hannctl-finops-guard.yaml` | 계정 공용 스택 템플릿: 작업용 역할 / 자동 삭제·예산·CloudFormation 실행 역할 (모든 시나리오 공용, 자동 생성) |
 | `k8s/` | `base`(워크로드), `before`(통제 전), `after`(개선 단계별), `policies`, `attack`(dry-run 전용 위험 예시) |
 | `lib/`, `tools/` | 공통 실행 라이브러리, 채점기, 비용 추정, 도구 설치 |
 

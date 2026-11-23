@@ -1,6 +1,7 @@
-# 시나리오 4 · EKS 보안 진단·하드닝·감사 증적 자동화 (AuditReady)
+# 시나리오 4 · EKS 보안 진단·하드닝·감사 증적 자동화 (AuditReady) — 해설서
 
-> 처음이라면 → [START_HERE.md](START_HERE.md) (설치·실행 3단계)
+> ▶ **실습은 [GUIDE.md](GUIDE.md) 하나만 보고 따라간다** (내려받기·준비도 GUIDE.md 0단계에 있다).
+> 이 문서는 시나리오의 배경·원리·직접 구성 방법·발표 포인트를 담은 해설서다.
 
 > **한 줄 요약**
 > EKS의 보안 설정을 **정해진 기준으로 자동 점검(진단)** 하고, 고칠 수 있는 항목을 **고친(하드닝)** 뒤, **같은 조건으로 다시 점검**한다.
@@ -12,9 +13,10 @@
 | 난이도 | ★★★½ (3.5/5) — 도구(kube-bench)와 결과 해석, AWS 책임 범위 이해가 필요 |
 | 핵심 기술 | **kube-bench**(CIS Amazon EKS Benchmark v1.8.0), 자체 점검 스크립트, **EKS 감사 로그 → CloudWatch Logs**, RBAC, PSA, Kyverno, NetworkPolicy, CronJob, (선택) **클러스터 업그레이드** |
 | 소요 시간 | 처음 `demo` 약 20분(인프라 생성·구성 15분 포함), 이후 재실행 약 5분, 삭제 약 8분 (실측) |
-| 예상 비용 | 약 **$0.21/시간(≈300원)** — EKS + Graviton 노드 1대 + NAT 1개. 처음 정한 유지 시간(기본 6시간) 뒤 자동 삭제 (자세히: [10장](#10-비용-안전장치-삭제-finops)) |
+| 예상 비용 | 약 **$0.21/시간(≈290원)** — EKS + Graviton 노드 1대 + NAT 1개. 처음 정한 유지 시간(기본 6시간) 뒤 자동 삭제 (자세히: [10장](#10-비용-안전장치-삭제-finops)) |
 | 과정 요구사항 연결 | 컴플라이언스 점검(CIS kube-bench **정기 점검**·결과 기반 개선, **감사 로그** 증적), 인프라 운영(**클러스터 버전 업그레이드**), 성과(준수율 N%→N%, 점검 시간 N시간→N분) |
 
+---
 
 ## 🎯 이 시나리오의 초점 (먼저 읽기)
 
@@ -59,15 +61,16 @@ cd s4-eks-audit-hardening
 ./run.sh demo                      # 전부 자동: 인프라 → Before 진단 → 60초 후 개선 5단계 → 재진단 → 채점·보고서
 ./run.sh demo --before-wait 180    # Before 상태를 3분 동안 관찰한 뒤 넘어가기
 ./run.sh demo --hours 3            # 유지 시간(자동 삭제까지) 3시간으로 시작 (기본 6, 0=무제한)
-./run.sh upgrade                   # (선택) 클러스터 업그레이드 절차 1.35 → 1.36 (약 25분)
+./run.sh upgrade                   # (선택) 클러스터 업그레이드 절차 1.35 → 1.36 (약 20분)
 ./run.sh down                      # 전부 삭제 (잊어도 처음 정한 유지 시간(기본 6시간) 뒤 자동 삭제)
 ```
 
 `demo`가 끝나면 다음 보고서가 생성된다.
-- `evidence/latest/REPORT.html`(점수·Before/After·타임라인): 자동으로 열린다.
+- `evidence/latest/REPORT.html`(점수·Before/After·타임라인): 자동으로 열린다(열리지 않으면 [START_HERE.md](START_HERE.md) 5단계 참고).
 - `evidence/latest/COMPLIANCE.md`: **kube-bench 표와 자체 점검 표를 분리한 전후 비교 보고서**다.
 
-다른 터미널에서 `./run.sh watch`를 켜 두면 권한, 정책, CronJob이 바뀌는 과정을 실시간으로 볼 수 있다.
+**다른 터미널에서 `./run.sh watch`** 를 켜 두면 권한, 정책, CronJob이 바뀌는 과정을 실시간으로 볼 수 있다(새 터미널에서도 이 폴더로 `cd` 한 뒤 실행).
+> `demo` 를 시작하자마자 켜도 된다. 클러스터가 만들어지는 동안(약 10~15분)은 `⏳ EKS 클러스터 hannctl-s4-audit 준비 대기 중` 화면이 15초마다 갱신되고, 클러스터가 준비되면 자동으로 관찰 화면으로 바뀐다. 끝낼 때는 `Ctrl+C`.
 
 > 처음 한 번 필요한 것: 내 AWS 계정에 관리자로 콘솔 로그인할 수 있으면 된다. 처음 실행할 때 브라우저 로그인으로 임시 자격 증명을 받고, 작업용 역할 `hannctl-operator-role` 이 자동으로 만들어진다(Access Key·`aws configure` 불필요). python3·AWS CLI·kubectl·helm 등은 **없는 것만 자동 설치**된다. 자세한 준비는 [START_HERE.md](START_HERE.md) 참고.
 > macOS, Ubuntu, CentOS/Rocky, AWS CloudShell에서 동작한다(로컬 Docker 불필요).
@@ -254,7 +257,7 @@ sequenceDiagram
 | 감사 로그 | DISABLED ⚠️ | **ENABLED** | 증적 수집 |
 | 개발자 Secret 조회 기록 | NOT_FOUND ⚠️ | **FOUND** (403 이벤트) | "막았다"는 사실이 기록으로 남음 |
 | 정기 점검 | MISSING | **PRESENT** | 사람 기억에 의존하지 않음 |
-| 점검 소요(진단 A+B) | 자동 약 20초 | **자동 약 15초** | 수동 가정 약 2시간 → 30초 이내 |
+| 점검 소요(진단 A+B) | 자동 약 20~30초 | **자동 약 20~30초** | 수동 가정 약 2시간 → 30초 이내 |
 
 > ⚠️ kube-bench의 **클러스터 전체 범위 항목** 대부분은 이번 개선으로 바뀌지 않는 것이 정상이다. 예:
 > - 4.1.1: EKS가 만든 `eks:addon-cluster-admin`
@@ -279,12 +282,12 @@ eval "$(./run.sh kubeconfig)"      # 이 시나리오 전용 kubeconfig (내 ~/.
 | 3 | 과다 권한 찾기 | `kubectl get clusterrolebinding -o wide \| grep cluster-admin` |
 | 4 | 개발자로 접속해 보기 | `kubectl --context hannctl-s4-developer get secrets -n audit-app` (After: Forbidden) |
 | 5 | 앱 SA의 권한 | `kubectl auth can-i list secrets -A --as=system:serviceaccount:audit-app:default` |
-| 6 | kube-bench 1회 실행 | `kubectl apply -f k8s/audit/kube-bench-job.yaml && kubectl -n hannctl-audit logs -f job/hannctl-kube-bench` |
+| 6 | kube-bench 1회 실행 (약 30초) | `kubectl apply -f k8s/audit/kube-bench-job.yaml && kubectl -n hannctl-audit wait --for=condition=complete job/hannctl-kube-bench --timeout=300s && kubectl -n hannctl-audit logs job/hannctl-kube-bench \| head -c 1500` → 끝나면 `kubectl -n hannctl-audit delete job hannctl-kube-bench` (특권 점검 Pod 는 바로 지운다) |
 | 7 | kube-bench 결과 읽기 | `cat evidence/latest/after/kube-bench.md` |
 | 8 | 자체 점검 단독 실행 | `python3 checks/cluster_checks.py --context hannctl-s4-audit --cluster hannctl-s4-audit --out /tmp/s4` |
 | 9 | 전후 비교 보고서 | `cat evidence/latest/COMPLIANCE.md` |
 | 10 | Namespace 보안 라벨 / Kyverno 정책 | `kubectl get ns audit-app --show-labels` / `kubectl get validatingpolicy` |
-| 11 | 정기 점검 | `kubectl get cronjob -n hannctl-audit` / 즉시 실행: `kubectl create job --from=cronjob/hannctl-kube-bench-daily manual-1 -n hannctl-audit` |
+| 11 | 정기 점검 | `kubectl get cronjob -n hannctl-audit` / 즉시 실행: `kubectl create job --from=cronjob/hannctl-kube-bench-daily manual-1 -n hannctl-audit` → 확인 후 `kubectl -n hannctl-audit delete job manual-1` |
 | 12 | 감사 로그 검색 (CLI) | `aws logs filter-log-events --log-group-name /aws/eks/hannctl-s4-audit/cluster --log-stream-name-prefix kube-apiserver-audit --filter-pattern '{ $.user.username = "developer" && $.responseStatus.code = 403 }'` |
 | 13 | 감사 로그 검색 (콘솔) | CloudWatch → Logs Insights → 로그 그룹 선택 → `fields @timestamp, user.username, verb, objectRef.resource, responseStatus.code \| filter responseStatus.code = 403` |
 
@@ -294,31 +297,71 @@ eval "$(./run.sh kubeconfig)"      # 이 시나리오 전용 kubeconfig (내 ~/.
 
 `run.sh`는 아래 과정을 **순서대로 대신 실행**해 주는 스크립트일 뿐이다. 한 번은 손으로 따라 해 보자. 그러면 "CloudFormation이 무엇을 만들고, 진단 도구가 어떻게 돌고, 무엇을 고치면 점검 결과가 어떻게 바뀌는지"가 확실히 보인다.
 
-> 직접 만든 환경도 `./run.sh test after`, `./run.sh score`, `./run.sh down`으로 그대로 검증·채점·삭제할 수 있다(스택 이름과 태그만 같게 만들면 된다).
+> 직접 만든 환경도 `./run.sh test before`, `./run.sh test after`, `./run.sh score`, `./run.sh down`으로 그대로 검증·채점·삭제할 수 있다(스택 이름과 태그만 같게 만들면 된다).
+> 6절의 명령은 모두 **이 시나리오 폴더에서, 한 터미널로 순서대로** 실행한다. 앞에서 만든 변수·함수(`MY_ARN`, `EXEC_ROLE` 등)를 뒤에서 그대로 쓰기 때문이다. 터미널을 새로 열었다면 6-1·6-2 를 다시 실행하고(6-2 는 스택이 이미 있으면 `EXEC_ROLE` 만 다시 읽는다), 그 뒤 절에서 만든 변수·함수 정의 줄도 다시 실행한다.
+> macOS 의 zsh 라면 먼저 `setopt interactivecomments` 를 실행한다(명령 뒤 `# 설명` 주석 때문, [START_HERE.md](START_HERE.md) 맨 위 참고).
+
+### 6-0. 작업용 역할 스택 — `cfn/hannctl-identity.yaml` (계정에 한 번만)
+
+`run.sh` 는 처음 실행할 때 이 스택을 자동으로 만든다(`./run.sh doctor` 를 이미 했다면 있으므로 건너뛰어도 된다).
+이 스택이 만드는 IAM 역할 `hannctl-operator-role` 이 이후 모든 작업의 권한이 된다. 역할이 아직 없으므로 이 단계만 **로그인한 자격 증명**으로 실행한다.
+
+```bash
+export AWS_REGION=ap-northeast-2
+LOGIN=hannctl-login     # aws login 으로 받은 프로필. 아직 로그인 전이면: aws login --profile hannctl-login (브라우저 없는 원격 환경은 --remote 추가)
+# 이미 있으면 그대로 쓰고, 없을 때만 만든다 (약 1분, 비용 0원)
+aws cloudformation describe-stacks --stack-name hannctl-identity --profile "$LOGIN" >/dev/null 2>&1 && echo "hannctl-identity 있음 → 그대로 사용" \
+  || aws cloudformation deploy --stack-name hannctl-identity --template-file cfn/hannctl-identity.yaml \
+       --capabilities CAPABILITY_NAMED_IAM --profile "$LOGIN" \
+       --tags Project=hannctl hannctl:role=identity hannctl:est-usd-per-hour=0 hannctl:managed-by=hannctl-cli
+# 프로필 hannctl = "로그인 자격 증명으로 hannctl-operator-role 로 전환" (CLI 가 임시 자격 증명을 알아서 받고 갱신한다)
+ACCT=$(aws sts get-caller-identity --profile "$LOGIN" --query Account --output text)
+aws configure set role_arn "arn:aws:iam::$ACCT:role/hannctl-operator-role" --profile hannctl
+aws configure set source_profile "$LOGIN" --profile hannctl
+aws configure set role_session_name hannctl-cli --profile hannctl
+aws configure set region ap-northeast-2 --profile hannctl
+aws sts get-caller-identity --profile hannctl --query Arn --output text   # → arn:aws:sts::<계정>:assumed-role/hannctl-operator-role/hannctl-cli
+```
+
+> - **CloudShell** 은 이미 로그인되어 있다: `LOGIN` 줄과 `--profile "$LOGIN"` 을 빼고 실행하고, `source_profile` 줄 대신 `aws configure set credential_source EcsContainer --profile hannctl` 을 쓴다.
+> - **root 로 로그인했다면** 역할 전환이 되지 않는다(AWS 제한). 이때는 `./run.sh doctor` 를 실행해 콘솔 사용자 `hannctl-admin` 을 만들고 그 사용자로 다시 로그인한다.
+> - root 로그인 후 만든 **`hannctl-admin` 으로 로그인했다면** 이 스택은 이미 있고, `hannctl-admin` 에는 스택을 조회·생성할 권한이 없다. 스택을 조회·생성하는 `aws cloudformation …` 명령만 건너뛰고 나머지 줄은 그대로 실행한다.
+> - 역할을 만든 직후에는 전환이 몇 초 늦을 수 있다. 마지막 줄이 오류면 10초 뒤 다시 실행한다.
+
+**콘솔로 할 때**: CloudFormation → 스택 생성 → "템플릿 파일 업로드" → `cfn/hannctl-identity.yaml` → 스택 이름 `hannctl-identity` → 태그 `Project=hannctl`, `hannctl:role=identity` 추가 → "IAM 리소스 생성 승인" 체크. 프로필 설정(`ACCT=` 줄부터 끝까지)은 위와 같다.
 
 ### 6-1. 준비 — 내 정보 확인
 
 ```bash
-eval "$(./run.sh kubeconfig)"    # 작업용 역할 hannctl-operator-role 로 작업 (AWS_PROFILE=hannctl, 처음이면 먼저 ./run.sh doctor)
-export AWS_REGION=ap-northeast-2
-MY_ARN=$(aws sts get-caller-identity --query Arn --output text)   # 클러스터 관리자로 등록할 나 (= hannctl-operator-role)
+eval "$(./run.sh kubeconfig)"    # 작업용 역할 hannctl-operator-role 로 작업 (AWS_PROFILE=hannctl — 6-0 에서 만든 프로필)
+export AWS_REGION=ap-northeast-2 AWS_PAGER=""   # AWS_PAGER="" : 긴 출력이 less 화면으로 넘어가지 않고 바로 출력되게
+# 클러스터 관리자로 등록할 나 (= hannctl-operator-role). 세션 ARN 을 IAM 역할 ARN 으로 바꿔 둔다
+MY_ARN=$(aws sts get-caller-identity --query Arn --output text | sed -E 's#:sts::([0-9]+):assumed-role/([^/]+)/.*#:iam::\1:role/\2#')
 MY_IP=$(curl -s https://checkip.amazonaws.com)/32                  # EKS API 에 접속을 허용할 내 IP
-echo "$MY_ARN  $MY_IP"
+echo "$MY_ARN  $MY_IP"      # arn:aws:iam::<계정>:role/hannctl-operator-role  <내 IP>/32
 ```
 
-> assumed-role ARN(`arn:aws:sts::…:assumed-role/역할/세션`)이면 `arn:aws:iam::<계정>:role/역할` 형태로 바꿔서 쓴다.
+> - `aws sts get-caller-identity` 는 `arn:aws:sts::<계정>:assumed-role/hannctl-operator-role/hannctl-cli` 같은 **세션 ARN** 을 돌려준다. EKS Access Entry 에는 IAM 역할 ARN(`arn:aws:iam::<계정>:role/역할`)만 등록할 수 있어서 위 `sed` 로 바꾼다. `MY_ARN` 이 `arn:aws:sts::` 로 시작하면 6-3 의 스택 생성이 실패하므로 출력 형태를 확인한다.
+> - `eval "$(./run.sh kubeconfig)"` 는 프로필 `hannctl`(6-0 또는 `./run.sh doctor` 가 만든다)을 쓰게 한다. `The config profile (hannctl) could not be found` 가 나오면 6-0 을 먼저 한다.
 
-### 6-2. 공통 안전장치 스택 (계정에 한 번만)
+### 6-2. 공통 안전장치 스택 — `cfn/hannctl-finops-guard.yaml` (계정에 한 번만)
+
+`./run.sh demo`(또는 `up`)를 한 번이라도 실행했다면 이 스택은 이미 있다. 아래 첫 명령은 **스택이 없을 때만** 만들고, 있으면 그대로 둔다. 여러 시나리오가 함께 쓰는 공통 스택이라, 이미 있는 스택에 `deploy` 를 다시 실행하면 다른 실습의 자동 삭제·월 상한 설정까지 바뀔 수 있다.
 
 ```bash
+# 이미 있으면(다른 시나리오나 ./run.sh demo 로 만든 적이 있으면) 그대로 두고 건너뛴다
+aws cloudformation describe-stacks --stack-name hannctl-finops-guard >/dev/null 2>&1 && echo "guard 스택 있음 → 건너뜀" || \
 aws cloudformation deploy --stack-name hannctl-finops-guard \
   --template-file cfn/hannctl-finops-guard.yaml --capabilities CAPABILITY_NAMED_IAM \
-  --tags Project=hannctl hannctl:role=guard
+  --tags Project=hannctl hannctl:role=guard hannctl:managed-by=hannctl-cli
 EXEC_ROLE=$(aws cloudformation describe-stacks --stack-name hannctl-finops-guard \
   --query "Stacks[0].Outputs[?OutputKey=='CfnExecRoleArn'].OutputValue" --output text)
+echo "$EXEC_ROLE"     # → arn:aws:iam::<계정>:role/hannctl-cfn-exec-role
 ```
 
-**콘솔로 할 때**: CloudFormation → 스택 생성 → "템플릿 파일 업로드" → `cfn/hannctl-finops-guard.yaml` → 스택 이름 `hannctl-finops-guard` → "IAM 리소스 생성 승인" 체크.
+`EXEC_ROLE` 에 `arn:aws:iam::<계정>:role/hannctl-cfn-exec-role` 이 들어 있어야 6-3 으로 넘어갈 수 있다(`echo "$EXEC_ROLE"` 로 확인). 비어 있으면 스택 생성이 아직 끝나지 않은 것이다.
+
+**콘솔로 할 때**(스택이 없을 때만): CloudFormation → 스택 생성 → "템플릿 파일 업로드" → `cfn/hannctl-finops-guard.yaml` → 스택 이름 `hannctl-finops-guard` → 태그 `Project=hannctl`, `hannctl:role=guard`, `hannctl:managed-by=hannctl-cli` 추가 → "IAM 리소스 생성 승인" 체크.
 
 ### 6-3. 시나리오 인프라 스택 — `cfn/stack.yaml` (감사 로그 **꺼진** 상태로 시작)
 
@@ -330,7 +373,9 @@ aws cloudformation deploy --stack-name hannctl-s4-audit \
   --tags Project=hannctl hannctl:scenario=s4 hannctl:lifetime-hours=6 hannctl:est-usd-per-hour=0.21
 ```
 
-**콘솔로 할 때**: 템플릿 `cfn/stack.yaml` 업로드 → 스택 이름 `hannctl-s4-audit` → 파라미터 `DeployerPrincipalArn`, `EndpointAllowedCidr` 입력, **`EnableAuditLog`=false** → **"권한 – IAM 역할"에서 `hannctl-cfn-exec-role` 선택** → 태그 4개 추가 → 생성.
+`Waiting for stack create/update to complete` 가 나온 뒤 **약 12~14분** 동안 출력 없이 기다리다가 `Successfully created/updated stack - hannctl-s4-audit` 가 나오면 끝난 것이다. 실패하면 콘솔 CloudFormation → `hannctl-s4-audit` → **이벤트** 탭에서 `CREATE_FAILED` 줄의 이유를 확인하고, `./run.sh down` 으로 지운 뒤 다시 만든다.
+
+**콘솔로 할 때**: 템플릿 `cfn/stack.yaml` 업로드 → 스택 이름 `hannctl-s4-audit` → 파라미터 `DeployerPrincipalArn`(6-1 의 `MY_ARN`), `EndpointAllowedCidr`(6-1 의 `MY_IP`) 입력, **`EnableAuditLog`=false** → **"권한 – IAM 역할"에서 `hannctl-cfn-exec-role` 선택** → 태그 4개(`Project=hannctl`, `hannctl:scenario=s4`, `hannctl:lifetime-hours=6`, `hannctl:est-usd-per-hour=0.21`) 추가 → 생성.
 콘솔의 **이벤트** 탭에서 VPC → 서브넷 → NAT → EKS(약 10분) → 노드 그룹 → 애드온 순서로 만들어지는 것을 볼 수 있다.
 
 > 💡 실행 역할(`hannctl-cfn-exec-role`)을 지정해야 자동 삭제(janitor)와 `./run.sh down`이 이 스택을 지울 수 있다.
@@ -348,11 +393,14 @@ helm repo add kyverno https://kyverno.github.io/kyverno/ && helm repo update
 helm install kyverno kyverno/kyverno -n kyverno --create-namespace --version 3.9.2 --wait
 
 # 업무 서비스(audit-app: web→api), 다른 팀(other-team: client), 승인된 점검 전용 Namespace
-kubectl create namespace audit-app; kubectl create namespace other-team
+kubectl create namespace audit-app --save-config; kubectl create namespace other-team --save-config
 kubectl -n audit-app  create configmap auditready-app --from-file=app/app.py
 kubectl -n other-team create configmap auditready-app --from-file=app/app.py
 kubectl apply -f k8s/base/
 kubectl apply -f k8s/audit/00-audit-namespace.yaml     # hannctl-audit (privileged 예외 구역 + 읽기 전용 RBAC)
+kubectl -n audit-app rollout status deploy/web --timeout=180s     # 업무 앱 준비 대기
+kubectl -n audit-app rollout status deploy/api --timeout=180s
+kubectl -n other-team rollout status deploy/client --timeout=180s
 
 # 개발자 IAM Role 로 접속하는 컨텍스트 (IAM Role → Access Entry → 그룹 hannctl:developers)
 DEV_ROLE=$(aws cloudformation describe-stacks --stack-name hannctl-s4-audit \
@@ -386,42 +434,103 @@ kubectl apply -n audit-app --dry-run=server -f k8s/attack/privileged-pod.yaml   
 aws eks describe-cluster --name hannctl-s4-audit --query cluster.logging   # → enabled: false (감사 로그 꺼짐)
 ```
 
+Before 상태를 채점용 테스트로도 기록해 둔다. `./run.sh test before` 는 클러스터 구성은 바꾸지 않고 **지금 상태 그대로** demo 와 같은 테스트를 실행해, 새 증적 폴더(`evidence/run-<시각>`, `evidence/latest` 가 이 폴더를 가리킨다)에 Before 결과를 기록한다. 이 기록이 있어야 6-7 채점의 "문제 재현(Before)" 항목과 보고서의 Before→After 비교가 채워진다.
+
+```bash
+./run.sh test before          # 약 1분 (kube-bench 포함). 위험이 재현된 항목이 노란색 ✔ 로 표시된다
+```
+
 ### 6-6. AFTER — 하나씩 적용하고 바로 확인
 
-| 순서 | 적용 | 바로 확인 | 기대 결과 |
-|---|---|---|---|
-| ① 감사 로그 | `aws cloudformation deploy --stack-name hannctl-s4-audit --template-file cfn/stack.yaml --role-arn "$EXEC_ROLE" --capabilities CAPABILITY_NAMED_IAM --parameter-overrides EnableAuditLog=true` (콘솔: 스택 → 업데이트 → 현재 템플릿 사용 → `EnableAuditLog`=true) | `aws eks describe-cluster --name hannctl-s4-audit --query 'cluster.logging.clusterLogging[?enabled].types'` | `["audit", "authenticator"]` |
-| ② RBAC | `kubectl delete -f k8s/before/legacy-rbac.yaml`<br>`kubectl apply -f k8s/after/20-developer-rbac.yaml` | `kubectl --context hannctl-s4-developer get secrets -n audit-app` | `Forbidden` (Pod 조회는 계속 가능) |
-| ③ Pod 보안 | `kubectl label ns audit-app other-team pod-security.kubernetes.io/enforce=restricted hannctl.io/protected=true`<br>`kubectl apply -f k8s/policies/kyverno-baseline.yaml` | privileged Pod dry-run (6-5 명령) | `violates PodSecurity "restricted"` 또는 Kyverno 거부 |
-| ④ 네트워크·SA | `kubectl apply -f k8s/after/40-network.yaml -f k8s/after/45-app-serviceaccounts.yaml`<br>`kubectl -n audit-app set serviceaccount deploy/web web`; `… deploy/api api`; `kubectl -n other-team set serviceaccount deploy/client client`<br>`for ns in $(kubectl get ns -o name \| cut -d/ -f2); do kubectl -n $ns patch sa default -p '{"automountServiceAccountToken":false}'; done` | `kubectl -n other-team exec deploy/client -- python3 /app/app.py probe http://api.audit-app.svc.cluster.local/health` | `BLOCKED` (web→api 는 `200`) |
-| ⑤ 정기 점검 | `kubectl apply -f k8s/after/50-kube-bench-cronjob.yaml` | `kubectl get cronjob -n hannctl-audit` | `hannctl-kube-bench-daily  0 0 * * *` |
-| ⑥ 재진단 | 6-5의 진단 A·B를 `/tmp/s4/after` 로 다시 실행 → `python3 checks/kube_bench.py compare /tmp/s4` | `cat /tmp/s4/COMPLIANCE.md` | 자체 점검 100%, CIS 4.1.5 FAIL→PASS |
-| ⑦ 감사 증적 | `kubectl --context hannctl-s4-developer get secrets -n audit-app` (일부러 거부당하기) → 1~3분 대기 | `aws logs filter-log-events --log-group-name /aws/eks/hannctl-s4-audit/cluster --log-stream-name-prefix kube-apiserver-audit --filter-pattern '{ $.user.username = "developer" && $.objectRef.resource = "secrets" }' --query 'events[].message' --output text \| head -c 600` | `"code":403` 가 들어 있는 이벤트 |
+각 단계는 "적용 → 바로 확인" 순서다. `# →` 뒤가 기대 결과다.
+
+```bash
+# ① 감사 로그 켜기 (CloudFormation 파라미터만 변경, 약 2~4분)
+#    콘솔: 스택 → 업데이트 → 현재 템플릿 사용 → EnableAuditLog=true (태그는 그대로 유지된다)
+#    CLI 의 deploy 는 --tags 를 빼면 스택 태그를 모두 지운다 → 6-3 과 같은 태그를 다시 준다 (빠지면 자동 삭제 대상에서 빠짐)
+aws cloudformation deploy --stack-name hannctl-s4-audit --template-file cfn/stack.yaml \
+  --role-arn "$EXEC_ROLE" --capabilities CAPABILITY_NAMED_IAM --parameter-overrides EnableAuditLog=true \
+  --tags Project=hannctl hannctl:scenario=s4 hannctl:lifetime-hours=6 hannctl:est-usd-per-hour=0.21
+aws eks describe-cluster --name hannctl-s4-audit --query 'cluster.logging.clusterLogging[?enabled].types[]' --output text
+#  → audit	authenticator
+
+# ② RBAC — 과다 권한 제거, 개발자는 audit-app 조회(view)만
+kubectl delete -f k8s/before/legacy-rbac.yaml
+kubectl apply -f k8s/after/20-developer-rbac.yaml
+kubectl --context hannctl-s4-developer get pods -n audit-app            # → web, api Pod 목록 (업무 권한 유지)
+kubectl --context hannctl-s4-developer get secrets -n audit-app         # → Error from server (Forbidden)
+kubectl auth can-i list secrets -A --as=system:serviceaccount:audit-app:default   # → no
+
+# ③ Pod 보안 — PSA restricted 라벨 + Kyverno ValidatingPolicy(Deny)
+kubectl label ns audit-app other-team pod-security.kubernetes.io/enforce=restricted hannctl.io/protected=true
+kubectl apply -f k8s/policies/kyverno-baseline.yaml
+kubectl wait validatingpolicy --all --for=jsonpath='{.status.conditionStatus.ready}'=true --timeout=120s
+kubectl apply -n audit-app --dry-run=server -f k8s/attack/privileged-pod.yaml
+#  → Error from server (Forbidden): ... violates PodSecurity "restricted:latest" ... (또는 Kyverno 거부)
+kubectl get pods -n audit-app                                            # → 기존 web, api 는 Running 그대로
+
+# ④ 네트워크 · ServiceAccount — default-deny + web→api 만 허용, 앱 전용 SA, default SA 토큰 OFF
+kubectl apply -f k8s/after/40-network.yaml -f k8s/after/45-app-serviceaccounts.yaml
+kubectl -n audit-app set serviceaccount deploy/web web
+kubectl -n audit-app set serviceaccount deploy/api api
+kubectl -n other-team set serviceaccount deploy/client client
+for ns in $(kubectl get ns -o name | cut -d/ -f2); do kubectl -n "$ns" patch sa default -p '{"automountServiceAccountToken":false}'; done
+kubectl -n audit-app rollout status deploy/web; kubectl -n audit-app rollout status deploy/api; kubectl -n other-team rollout status deploy/client
+kubectl -n other-team exec deploy/client -- python3 /app/app.py probe http://api.audit-app.svc.cluster.local/health   # → BLOCKED
+kubectl -n audit-app exec deploy/web -- python3 /app/app.py probe http://api.audit-app.svc.cluster.local/health       # → 200
+
+# ⑤ 정기 점검 — kube-bench CronJob (매일 00:00 UTC = 09:00 KST)
+kubectl apply -f k8s/after/50-kube-bench-cronjob.yaml
+kubectl get cronjob -n hannctl-audit                                     # → hannctl-kube-bench-daily   0 0 * * *
+
+# ⑥ 재진단 — 6-5 와 같은 Job, 같은 스크립트를 /tmp/s4/after 로
+mkdir -p /tmp/s4/after
+kubectl apply -f k8s/audit/kube-bench-job.yaml
+kubectl -n hannctl-audit wait --for=condition=complete job/hannctl-kube-bench --timeout=300s
+kubectl -n hannctl-audit logs job/hannctl-kube-bench > /tmp/s4/after/kube-bench-raw.log
+kubectl -n hannctl-audit delete job hannctl-kube-bench
+python3 checks/kube_bench.py summarize /tmp/s4/after/kube-bench-raw.log /tmp/s4/after
+#  → 17 10 23 0 PASS
+python3 checks/cluster_checks.py --context hannctl-s4-audit --cluster hannctl-s4-audit --out /tmp/s4/after
+#  → 12 12 5.8
+python3 checks/kube_bench.py compare /tmp/s4 && cat /tmp/s4/COMPLIANCE.md
+#  → 자체 점검 25% → 100%, CIS 4.1.5 FAIL → PASS
+
+# ⑦ 감사 증적 — 개발자가 일부러 Secret 을 조회해 거부당한 뒤, 1~3분 기다려 CloudWatch 에서 찾는다
+kubectl --context hannctl-s4-developer get secrets -n audit-app         # → Forbidden
+aws logs filter-log-events --log-group-name /aws/eks/hannctl-s4-audit/cluster --log-stream-name-prefix kube-apiserver-audit \
+  --filter-pattern '{ $.user.username = "developer" && $.objectRef.resource = "secrets" && $.responseStatus.code = 403 }' \
+  --query 'events[].message' --output text | grep -o '"username":"developer"\|"verb":"list"\|"resource":"secrets"\|"code":403' | sort | uniq -c
+#  → 1 "code":403 / 1 "resource":"secrets" / 1 "username":"developer" / 1 "verb":"list"
+#    (숫자 = 수집된 거부 횟수. ②·⑦ 이 모두 수집되면 2. 아무것도 안 나오면 1분 뒤 다시)
+```
 
 ### 6-7. 검증 · 채점 · 삭제는 그대로 자동으로
 
 ```bash
-./run.sh test after      # Before 와 같은 테스트 세트 실행 (진단 A·B 포함)
-./run.sh score           # 평가표 채점 + REPORT.html
+./run.sh test after && ./run.sh score   # Before 와 같은 테스트 세트(진단 A·B 포함, 약 2~4분) → 채점 + REPORT.md / REPORT.html (Before→After 비교)
 ./run.sh down            # 삭제 (또는 콘솔에서 스택 삭제 — 이 경우 실행 역할이 자동으로 쓰인다)
 ```
+
+> `./run.sh test after` 는 클러스터 구성을 바꾸지 않고 **직접 구성한 상태 그대로** Before 와 같은 테스트를 실행해, 가장 최근 증적 폴더(6-5 의 `test before` 가 만든 폴더)에 이어 기록한다. 그래서 `score` 가 Before·After 를 함께 채점한다. 6-5 의 `test before` 를 건너뛰면 Before 항목이 채워지지 않는다.
+> 6-5·6-6 에서 `/tmp/s4` 에 만든 결과는 손으로 확인하기 위한 것이다. 채점에는 `test before`/`test after` 가 `evidence/` 에 남긴 결과만 쓰인다.
 
 ---
 
 ## 7. (선택) 클러스터 버전 업그레이드 절차 — `./run.sh upgrade`
 
-과정 요구사항의 "클러스터 버전 업그레이드"를 **절차대로** 연습한다. demo에는 포함되지 않는다(약 25분, 추가 비용 약 $0.1).
+과정 요구사항의 "클러스터 버전 업그레이드"를 **절차대로** 연습한다. demo에는 포함되지 않는다(약 20분, 추가 비용 약 $0.07).
 > 실행 전에 유지 시간을 넉넉히 잡는다: `./run.sh lifetime 8` (생성 시각부터 8시간). 업그레이드 도중 자동 삭제되면 안 되기 때문이다.
 
 | 순서 | 무엇을 하나 | 왜 이 순서인가 |
 |---|---|---|
 | 1. 사전 점검 | `aws eks list-insights` (EKS Upgrade Insights: 제거될 API 사용 여부), 노드·앱 상태 기록 | 업그레이드 후 깨질 것을 **미리** 찾는다 |
-| 2. Control Plane | CloudFormation `KubernetesVersion=1.36` 업데이트 (약 8~12분) | 한 번에 **1 minor 버전씩만** 올릴 수 있고, Control Plane이 항상 먼저다 |
+| 2. Control Plane | CloudFormation `KubernetesVersion=1.36` 업데이트 (약 7~12분) | 한 번에 **1 minor 버전씩만** 올릴 수 있고, Control Plane이 항상 먼저다 |
 | 3. 노드 그룹 | `NodeKubernetesVersion=1.36` → 노드를 1대씩 롤링 교체 | 노드(kubelet)는 Control Plane보다 높을 수 없다 |
 | 4. 애드온 | vpc-cni, kube-proxy, coredns 등을 새 버전 기본값으로 갱신 | 애드온도 버전 호환성이 있다 |
 | 5. 사후 점검 | 노드 버전, 앱 `200`, `./run.sh test after`로 재진단 | 업그레이드도 **변경**이다. 변경 후에는 다시 점검한다 |
 
-> 되돌리기(다운그레이드)는 **불가능**하다. 실무에서는 발표 직전처럼 위험한 시점에는 하지 않는다.
+> 되돌리기(다운그레이드)는 **불가능**하다. 발표 직전처럼 환경이 망가지면 곤란한 시점에는 하지 않는다.
 
 ---
 
@@ -430,7 +539,7 @@ aws eks describe-cluster --name hannctl-s4-audit --query cluster.logging   # →
 1. **문제**: 시간이 지나며 쌓인 과다 권한, 꺼진 감사 로그. Before 진단 결과(자체 점검 25%, CIS 4.1.5 FAIL, 흔적 없음)로 보여준다.
 2. **점검 기준 2개를 분리**: kube-bench(CIS 공식)와 자체 점검(회사 기준)은 **검사 영역이 다르므로 같은 준수율로 합산하지 않는다**(`COMPLIANCE.md` 표 1과 표 2).
 3. **핵심 장면**: 개발자가 Secret을 조회했을 때 Before는 "성공했는데 **기록이 없음**", After는 "거부됐고 **CloudWatch에 기록됨**". 감사 로그의 가치를 한 장면으로 보여준다.
-4. **정량 성과**(이 키트의 실측 예시 — 발표 때는 자기 실행 값으로): 자체 점검 통과율 25% → 100%, kube-bench 자동판정 준수율 59% → 62%(FAIL 11 → 10, 바뀐 항목 4.1.5), 점검 소요 수동 약 2시간(가정) → 자동 약 15초, 감사 이벤트 0건 → 1건(403).
+4. **정량 성과**(이 키트의 실측 예시 — 발표 때는 자기 실행 값으로): 자체 점검 통과율 25% → 100%, kube-bench 자동판정 준수율 59% → 62%(FAIL 11 → 10, 바뀐 항목 4.1.5), 점검 소요 수동 약 2시간(가정) → 자동 약 20~30초, 감사 이벤트 0건 → 1건(403).
 5. **한계**(과장하지 않기):
    - **CIS 100% 준수가 아니다.** 남는 FAIL(예: 4.1.1 — EKS가 자동으로 만드는 `eks:addon-cluster-admin` 바인딩, 4.2.x — aws-node·kube-proxy 같은 시스템 DaemonSet)과 AWS 관리형 Control Plane 항목(WARN, 직접 점검 불가)을 **이유와 함께** 그대로 보고한다(`COMPLIANCE.md`의 "남은 이유" 열).
    - **ISMS-P 인증 획득이 아니다.** 감사 대응을 **연습**한 것이다.
@@ -442,8 +551,9 @@ aws eks describe-cluster --name hannctl-s4-audit --query cluster.logging   # →
 
 ```text
 s4-eks-audit-hardening/
-├── run.sh                    # 유일한 진입점 (demo / upgrade / up / before / after / test / score / status / watch / lifetime / down)
+├── run.sh                    # 유일한 진입점 (doctor / demo / upgrade / up / before / after / test / score / status / watch / cost / lifetime / down)
 ├── README.md                 # 이 문서 (학습 가이드)
+├── START_HERE.md             # 처음 시작하기 (내려받기 · 준비 · 점검 · 실행 · 삭제)
 ├── RUBRIC.md / rubric.json   # 평가표 (사람용 / 자동 채점용)
 ├── cfn/
 │   ├── stack.yaml            # AWS 인프라 전부 (VPC, EKS, 노드, 애드온, 감사 로그 토글, 개발자 Role)
@@ -460,10 +570,20 @@ s4-eks-audit-hardening/
 │   ├── audit/                # 점검 전용 Namespace·읽기 RBAC, kube-bench Job
 │   ├── policies/             # Kyverno 정책 (privileged / hostPath / root)
 │   └── attack/               # 위험 Pod 예시 (서버측 dry-run 으로만 사용)
-├── lib/                      # 공통 스크립트 (common.sh, score.py, tagcheck.py)
+├── lib/                      # 공통 스크립트 (common.sh, 채점기 score.py, 태그 감사 tagcheck.py, 비용 추정 cost.py)
 ├── tools/install-tools.sh    # 필요한 도구 확인 → 없는 것만 설치 (python3·AWS CLI·kubectl·helm 등, macOS/Linux)
 └── evidence/                 # 실행마다 생성: before/ after/ (kube-bench·자체점검 원본), COMPLIANCE.md, REPORT.md/html
 ```
+
+**`cfn/` 템플릿 3개의 관계**
+
+| 템플릿 | 만드는 스택 → 주요 리소스 | 언제 만들어지나 |
+|---|---|---|
+| `hannctl-identity.yaml` | `hannctl-identity` → 작업용 역할 `hannctl-operator-role` (+root 로 로그인했을 때 콘솔 사용자 `hannctl-admin`) | `run.sh` 첫 실행 때 자동 (손으로는 6-0) |
+| `hannctl-finops-guard.yaml` | `hannctl-finops-guard` → 자동 삭제 Lambda `hannctl-janitor`, 월 예산, CloudFormation 실행 역할 `hannctl-cfn-exec-role` | 첫 `demo`/`up` 때 자동 (손으로는 6-2) |
+| `stack.yaml` | `hannctl-s4-audit` → 이 시나리오의 실습 인프라 전부. `hannctl-cfn-exec-role` 로 배포되므로 guard 스택이 먼저 있어야 한다 | `demo`/`up` 때 자동 (손으로는 6-3) |
+
+> 앞의 두 스택은 계정에 하나씩만 있고 모든 시나리오가 함께 쓴다(비용 0원 수준). `./run.sh down` 은 시나리오 스택만 지우고, 공용 스택은 `./run.sh down-all`(guard) / `./run.sh down-all --identity`(identity 까지)로 지운다(10-2 참고).
 
 ---
 
@@ -482,7 +602,7 @@ s4-eks-audit-hardening/
 | 사용 형태 | 예상 비용 |
 |---|---|
 | `demo` 1회 (실측: 생성·구성 15분 + 진단·개선·재진단 5분 + 삭제 8분) | **≈ $0.10 (≈ 140원)** — 매 실행 `REPORT.html` 의 "비용" 섹션에 실제 값 |
-| (선택) `./run.sh upgrade` | 추가 약 25분 ≈ $0.09 (≈ 130원) |
+| (선택) `./run.sh upgrade` | 추가 약 20분 ≈ $0.07 (≈ 100원) |
 | 깜빡 잊고 방치 | 처음 정한 유지 시간(기본 **6시간**) 후 자동 삭제 → **최대 ≈ $1.26 (≈ 1,800원)** |
 
 > `./run.sh cost` → 이번 달 hannctl 전체 누적 예상 비용(가동시간 × 단가)을 바로 보여준다. AWS 청구서는 최대 24시간 늦게 반영된다.
@@ -501,8 +621,9 @@ s4-eks-audit-hardening/
 |---|---|
 | `./run.sh lifetime 9` | 유지 시간 변경 — **만든 시각부터** 9시간 (예: 6시간 중 4시간 지난 뒤 → 남은 5시간). `0` = 무제한 |
 | `./run.sh cap 0` / `cap 20` | 월 비용 상한 끄기 / 다시 켜기 (자세한 내용: [START_HERE.md 7단계](START_HERE.md#7단계선택-자동-삭제비용-상한을-끄고-싶다면)) |
-| `./run.sh down` | 스택 삭제 + 잔여 리소스 확인 (10~15분, 삭제되는 과정이 화면에 보임) |
+| `./run.sh down` | 스택 삭제 + 잔여 리소스 확인 (실측 약 8분, 길면 15분. 삭제되는 과정이 화면에 보임) |
 | `./run.sh down-all` | 공통 안전장치(janitor·예산)까지 삭제 (다른 hannctl 스택이 없을 때만) |
+| `./run.sh down-all --identity` | 위에 더해 작업용 역할(`hannctl-identity` 스택)까지 삭제 |
 
 **hannctl 식별자 규칙**: 이 시나리오가 AWS에 만드는 모든 리소스는 이름이 `hannctl-`로 시작하거나 `Project=hannctl` 태그를 가진다. After 테스트의 `tag_compliance` 항목이 이를 자동으로 검사한다.
 AWS가 자동으로 만드는 일부 하위 리소스는 이름을 정할 수 없다. 예: EKS 노드 인스턴스 프로파일 `eks-…`, EKS가 만드는 `eks:addon-cluster-admin` 같은 Kubernetes 바인딩. 이들은 클러스터·노드 그룹과 함께 생성되고 삭제된다.

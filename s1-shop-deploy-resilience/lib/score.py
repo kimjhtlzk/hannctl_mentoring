@@ -110,7 +110,8 @@ def main():
         out.append("\n## 4. 비용 (실시간 추정)\n")
         out.append("| 항목 | 값 |\n|---|---|")
         out.append(f'| 시나리오 단가(추정) | ${cost["rate_usd_per_hour"]:.2f}/시간 (≈ {krw(cost["rate_usd_per_hour"])}) |')
-        out.append(f'| 이번 demo 실행 | {cost["run_hours"]:.2f}시간 → ${cost["run_cost_usd"]:.2f} (≈ {krw(cost["run_cost_usd"])}) |')
+        if cost["run_hours"] > 0:   # demo 로 실행했을 때만 (before/after 를 따로 실행하면 생략)
+            out.append(f'| 이번 demo 실행 | {cost["run_hours"]:.2f}시간 → ${cost["run_cost_usd"]:.2f} (≈ {krw(cost["run_cost_usd"])}) |')
         out.append(f'| 스택 생성 후 누적 | {cost["stack_age_hours"]:.2f}시간 → ${cost["stack_cost_usd"]:.2f} (≈ {krw(cost["stack_cost_usd"])}) |')
         if cost.get("month_to_date_usd") is not None:
             out.append(f'| 이번 달 hannctl 전체 누적 | ${cost["month_to_date_usd"]:.2f} / 상한 ${cost["cap_usd"]:.0f} (≈ {krw(cost["month_to_date_usd"])} / {krw(cost["cap_usd"])}) |')
@@ -200,8 +201,8 @@ def write_html(a, rubric, rows, results, latest, keys, timeline, total, max_tota
         mtd = cost.get("month_to_date_usd")
         cost_html = (f'<h2>비용 (실시간 추정)</h2><table>'
                      f'<tr><td>시나리오 단가</td><td>${cost["rate_usd_per_hour"]:.2f}/시간 (≈ {krw(cost["rate_usd_per_hour"])})</td></tr>'
-                     f'<tr><td>이번 demo 실행</td><td>{cost["run_hours"]:.2f}시간 → <b>${cost["run_cost_usd"]:.2f}</b> (≈ {krw(cost["run_cost_usd"])})</td></tr>'
-                     f'<tr><td>스택 생성 후 누적</td><td>{cost["stack_age_hours"]:.2f}시간 → ${cost["stack_cost_usd"]:.2f}</td></tr>'
+                     + (f'<tr><td>이번 demo 실행</td><td>{cost["run_hours"]:.2f}시간 → <b>${cost["run_cost_usd"]:.2f}</b> (≈ {krw(cost["run_cost_usd"])})</td></tr>' if cost["run_hours"] > 0 else "")
+                     + f'<tr><td>스택 생성 후 누적</td><td>{cost["stack_age_hours"]:.2f}시간 → ${cost["stack_cost_usd"]:.2f}</td></tr>'
                      + (f'<tr><td>이번 달 hannctl 전체</td><td>${mtd:.2f} / 상한 ${cost["cap_usd"]:.0f}'
                         f'<div class="bar"><span style="width:{min(100, int(mtd / cost["cap_usd"] * 100))}%"></span></div></td></tr>' if mtd is not None else "")
                      + '</table><p><small>가동시간 × 서울 리전 단가 기준 보수적 추정. 실제 청구액은 Cost Explorer(태그 Project=hannctl).</small></p>')

@@ -151,7 +151,8 @@ Resources:
       RetentionInDays: 3
       Tags: [{ Key: Name, Value: !Sub "${ClusterName}-control-plane-logs" }]
 
-  Cluster:
+  # 논리 ID 를 EksCluster 로 둔다: run.sh 진행 표시가 이름 앞부분이 같은 ClusterRole·ClusterLogGroup 과 구분해 EKS 생성 줄을 보여 준다
+  EksCluster:
     Type: AWS::EKS::Cluster
     DependsOn: ClusterLogGroup
     Properties:
@@ -176,7 +177,7 @@ Resources:
   DeployerAccess:
     Type: AWS::EKS::AccessEntry
     Properties:
-      ClusterName: !Ref Cluster
+      ClusterName: !Ref EksCluster
       PrincipalArn: !Ref DeployerPrincipalArn
       AccessPolicies:
         - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
@@ -186,7 +187,7 @@ Resources:
   VpcCniAddon:
     Type: AWS::EKS::Addon
     Properties:
-      ClusterName: !Ref Cluster
+      ClusterName: !Ref EksCluster
       AddonName: vpc-cni
       ResolveConflicts: OVERWRITE
       ConfigurationValues: '{"enableNetworkPolicy":"true","nodeAgent":{"enablePolicyEventLogs":"true"}}'
@@ -194,7 +195,7 @@ Resources:
   KubeProxyAddon:
     Type: AWS::EKS::Addon
     Properties:
-      ClusterName: !Ref Cluster
+      ClusterName: !Ref EksCluster
       AddonName: kube-proxy
       ResolveConflicts: OVERWRITE
       Tags: [{ Key: Name, Value: !Sub "${ClusterName}-kube-proxy" }]
@@ -223,7 +224,7 @@ Resources:
     Type: AWS::EKS::Nodegroup
     DependsOn: [VpcCniAddon, KubeProxyAddon]
     Properties:
-      ClusterName: !Ref Cluster
+      ClusterName: !Ref EksCluster
       NodegroupName: !Sub "${ClusterName}-ng-${NodeCapacityType}"   # 사양(SPOT↔ON_DEMAND) 변경 시 새 이름으로 교체 생성
       NodeRole: !GetAtt NodeRole.Arn
       AmiType: AL2023_ARM_64_STANDARD
@@ -240,7 +241,7 @@ Resources:
     Type: AWS::EKS::Addon
     DependsOn: NodeGroup
     Properties:
-      ClusterName: !Ref Cluster
+      ClusterName: !Ref EksCluster
       AddonName: coredns
       ResolveConflicts: OVERWRITE
       Tags: [{ Key: Name, Value: !Sub "${ClusterName}-coredns" }]
@@ -248,7 +249,7 @@ Resources:
     Type: AWS::EKS::Addon
     DependsOn: NodeGroup
     Properties:
-      ClusterName: !Ref Cluster
+      ClusterName: !Ref EksCluster
       AddonName: metrics-server
       ResolveConflicts: OVERWRITE
       Tags: [{ Key: Name, Value: !Sub "${ClusterName}-metrics-server" }]
@@ -381,7 +382,7 @@ Resources:
       Tags: [{ Key: Name, Value: hannctl-s3-ci }]
 
 Outputs:
-  ClusterName:   { Value: !Ref Cluster }
+  ClusterName:   { Value: !Ref EksCluster }
   VpcId:         { Value: !Ref Vpc }
   RepoUri:       { Value: !GetAtt ReleaseRepo.RepositoryUri }
   SourceBucket:  { Value: !Ref SourceBucket }

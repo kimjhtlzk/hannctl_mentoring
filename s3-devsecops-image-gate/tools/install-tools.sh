@@ -71,11 +71,11 @@ else
 fi
 
 # ---------------------------------------------------------------- 3) AWS CLI v2 (2.32 이상: 브라우저 로그인 aws login 지원)
-awscli_ok() { local v; v=$(aws --version 2>&1 | sed -n 's#^aws-cli/\([0-9]*\)\.\([0-9]*\)\..*#\1 \2#p'); set -- $v; [ "${1:-0}" -eq 2 ] && [ "${2:-0}" -ge 32 ]; }
+awscli_ok() { local v; v=$(AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null aws --version 2>&1 | sed -n 's#^aws-cli/\([0-9]*\)\.\([0-9]*\)\..*#\1 \2#p'); set -- $v; [ "${1:-0}" -eq 2 ] && [ "${2:-0}" -ge 32 ]; }
 if have aws && awscli_ok; then
-  line "AWS CLI" "✔ 있음 ($(aws --version 2>&1 | cut -d' ' -f1))"
+  line "AWS CLI" "✔ 있음 ($(AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null aws --version 2>&1 | cut -d' ' -f1))"
 else
-  have aws && line "AWS CLI" "… $(aws --version 2>&1 | cut -d' ' -f1) 는 오래되어 최신 버전을 폴더 안에 설치 (기존 것은 그대로)"
+  have aws && line "AWS CLI" "… $(AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null aws --version 2>&1 | cut -d' ' -f1) 는 오래되어 최신 버전을 폴더 안에 설치 (기존 것은 그대로)"
   line "AWS CLI" "… v2 설치 중 (.tools/aws-cli)"
   if [ "$OS" = linux ]; then
     A=$([ "$ARCH" = amd64 ] && echo x86_64 || echo aarch64)
@@ -97,7 +97,7 @@ EOF
       ln -sf "$DIR/aws-cli/aws" "$BIN/aws"
   fi
   hash -r
-  awscli_ok && line "AWS CLI" "✔ 설치됨 ($(aws --version 2>&1 | cut -d' ' -f1))" || { line "AWS CLI" "✘ 설치 실패"; exit 1; }
+  awscli_ok && line "AWS CLI" "✔ 설치됨 ($(AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null aws --version 2>&1 | cut -d' ' -f1))" || { line "AWS CLI" "✘ 설치 실패"; exit 1; }
 fi
 
 # ---------------------------------------------------------------- 4) kubectl

@@ -228,6 +228,22 @@ Resources:
                 Effect: Allow
                 Action: [iam:ListAccessKeys, iam:DeleteAccessKey]
                 Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:user/hannctl-*
+              - Sid: hannctlPreCleanEksOrphansRead
+                Effect: Allow
+                Action: [ec2:DescribeNetworkInterfaces, ec2:DescribeSecurityGroups]
+                Resource: "*"
+              - Sid: hannctlPreCleanEksOrphanEni
+                Effect: Allow
+                Action: ec2:DeleteNetworkInterface
+                Resource: "*"
+                Condition:
+                  StringLike: { "aws:ResourceTag/cluster.k8s.amazonaws.com/name": "hannctl-*" }
+              - Sid: hannctlPreCleanEksOrphanSg
+                Effect: Allow
+                Action: ec2:DeleteSecurityGroup
+                Resource: "*"
+                Condition:
+                  StringLike: { "aws:ResourceTag/aws:eks:cluster-name": "hannctl-*" }
               - Sid: hannctlNotify
                 Effect: Allow
                 Action: sns:Publish
@@ -269,6 +285,7 @@ Resources:
           s3 = boto3.resource("s3")
           iam = boto3.client("iam")
           sns = boto3.client("sns")
+          ec2 = boto3.client("ec2")
           DEFAULT_H = float(os.environ["DEFAULT_LIFETIME_HOURS"])
           GUARD = os.environ["GUARD_STACK"]
           SHARED = (GUARD, "hannctl-identity")   # 공통 스택(가드·작업용 신원)은 삭제/비용 계산 대상이 아니다
@@ -295,6 +312,20 @@ Resources:
                       if r["ResourceType"] == "AWS::IAM::User":
                           for k in iam.list_access_keys(UserName=pid)["AccessKeyMetadata"]:
                               iam.delete_access_key(UserName=pid, AccessKeyId=k["AccessKeyId"])
+                      if r["ResourceType"] == "AWS::EKS::Cluster":
+                          eks_orphan_clean(pid, r["ResourceStatus"] == "DELETE_COMPLETE")
+
+          def eks_orphan_clean(cluster, cluster_gone):
+              # 노드 축소 때 VPC CNI 가 남긴 분리된 ENI(+클러스터 삭제 뒤 남은 EKS 보안 그룹) → 남아 있으면 VPC 삭제가 실패한다
+              try:
+                  for e in ec2.describe_network_interfaces(Filters=[{"Name": "tag:cluster.k8s.amazonaws.com/name", "Values": [cluster]},
+                                                                    {"Name": "status", "Values": ["available"]}])["NetworkInterfaces"]:
+                      ec2.delete_network_interface(NetworkInterfaceId=e["NetworkInterfaceId"])
+                  if cluster_gone:
+                      for g in ec2.describe_security_groups(Filters=[{"Name": "tag:aws:eks:cluster-name", "Values": [cluster]}])["SecurityGroups"]:
+                          ec2.delete_security_group(GroupId=g["GroupId"])
+              except Exception as e:
+                  print("eni/sg clean skip", cluster, e)
 
           def month_estimate(now):
               # 이번 달 hannctl 스택 가동시간 × 단가 태그(hannctl:est-usd-per-hour) — 청구서 지연 없이 실시간 추정

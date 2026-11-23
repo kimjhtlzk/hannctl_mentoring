@@ -102,7 +102,11 @@ scenario_up() {
   info "이미지 빌드 대기…"
   [ "$(ci_wait "$b1")" = SUCCEEDED ] && [ "$(ci_wait "$b2")" = SUCCEEDED ] || die "초기 이미지 빌드 실패 (CodeBuild 콘솔 hannctl-s1-ci 확인)"
   ok "ECR 이미지: v1, v2-bad"
-  apply_deploy "$K8S/before/shop-api.yaml" v1
+  if k -n shop get deploy shop-api >/dev/null 2>&1; then   # README 6장처럼 직접 구성한 환경: 이미 배포한 설정을 덮어쓰지 않는다
+    info "shop-api 가 이미 배포되어 있어 현재 설정을 그대로 둡니다"
+  else
+    apply_deploy "$K8S/before/shop-api.yaml" v1
+  fi
   k -n shop rollout status deploy/shop-api --timeout=300s >/dev/null || die "shop-api 배포 실패"
   k -n shop-loadtest rollout status deploy/loadgen --timeout=180s >/dev/null
   ok "shop-api v1 실행 중"
@@ -148,8 +152,8 @@ ci_tests_finish() {
   info "CI 결과 대기…"
   st=$(ci_wait "$CI_VULN_ID"); ci_log "$CI_VULN_ID" "$RUN_DIR/$p/ci-vuln-build.log"
   local pushed; pushed=$([ "$(ecr_has vuln)" = yes ] && echo PUSHED || echo BLOCKED)
-  local found; found=$(grep -E "^Total: " "$RUN_DIR/$p/ci-vuln-build.log" | head -2 | tr '\n' ' ')
-  record ci_vuln_image "$p" "$exp" "$pushed" "공급망: 취약 이미지 ECR 유입" "빌드 $st, $(ci_seconds "$CI_VULN_ID")s ${found:+/ $found}"
+  local found; found=$(grep -E "^Total: " "$RUN_DIR/$p/ci-vuln-build.log" | head -2 | tr '\n' ' ' | sed 's/ *$//')
+  record ci_vuln_image "$p" "$exp" "$pushed" "공급망: 취약 이미지 ECR 유입" "빌드 $st, $(ci_seconds "$CI_VULN_ID")s${found:+ / $found}"
   if [ "$p" = before ]; then
     aws ecr wait image-scan-complete --repository-name "$ECR_REPO" --image-id imageTag=vuln 2>/dev/null
     aws ecr describe-image-scan-findings --repository-name "$ECR_REPO" --image-id imageTag=vuln \
@@ -160,12 +164,20 @@ ci_tests_finish() {
     record ci_secure_image "$p" PUSHED "$([ "$st" = SUCCEEDED ] && [ "$(ecr_has v1)" = yes ] && echo PUSHED || echo "$st")" \
       "공급망: 정상 이미지는 검사 통과 후 배포" "빌드 $st, $(ci_seconds "$CI_SECURE_ID")s"
   fi
-  grep -E "Total:|CRITICAL|SECURITY GATE|NOT pushed" "$RUN_DIR/$p/ci-vuln-build.log" | head -6 | sed 's/^/      /'
+  # 빌드 로그 중 실제 출력만 (CodeBuild 가 찍는 buildspec 명령 원문은 제외) — 게이트 상태, Trivy 합계, CRITICAL 예시 2줄, push 여부
+  grep -E '^\[hannctl\]|^Total: |│ CRITICAL │' "$RUN_DIR/$p/ci-vuln-build.log" | awk '/│/{if(++c>2)next}1' | head -8 | sed 's/^/      /'
 }
 
 load_test() { # 같은 부하(LOAD_SECONDS 동안 LOAD_CONC 동시 요청)를 주고 Pod/노드 변화 관측
   local p=$1 out="$RUN_DIR/$p/load.json" csv="$RUN_DIR/$p/load-timeline.csv"
-  local n0 maxr=0 maxn r n t=0
+  local n0 maxr=0 maxn r n t=0 i
+  if [ "$p" = after ] && [ "$(node_count)" -gt 1 ]; then
+    # 직전 부하로 늘어난 노드가 남아 있으면 Pending 이 생기지 않아 노드 확장을 관찰할 수 없다 → 같은 조건(노드 1대)이 될 때까지 대기
+    info "이전 부하로 늘어난 노드 $(node_count)대 → Cluster Autoscaler 가 한가한 노드를 줄여 1대가 될 때까지 대기 (보통 3~8분, 최대 12분)"
+    for i in $(seq 1 72); do [ "$(node_count)" -le 1 ] && break; sleep 10; done
+    if [ "$(node_count)" -le 1 ]; then ok "노드 1대로 축소됨 → Before 와 같은 조건에서 부하 시작"
+    else warn "노드가 아직 $(node_count)대 — 노드 확장 결과가 FIXED 로 나올 수 있습니다 (몇 분 뒤 ./run.sh test after 로 재시도)"; fi
+  fi
   n0=$(node_count); maxn=$n0
   info "부하 시작: ${LOAD_SECONDS}s 동안 동시 ${LOAD_CONC}개 요청 → GET /products"
   echo "seconds,ready_pods,hpa_desired,nodes" > "$csv"
@@ -201,7 +213,8 @@ bad_deploy_test() { # 버그 버전(v2-bad) 배포 중 서비스 영향 측정 �
   k -n shop set image deploy/shop-api "app=$(repo_uri):v2-bad" >/dev/null
   wait "$pid"
   local sr; sr=$(json_field "$out" success_rate)
-  EV_LINES=8 ev "$p" bad-deploy-pods -- kubectl --context "$CLUSTER" -n shop get pods -o wide
+  # HPA 로 Pod 가 8개까지 늘어난 상태에서도 v2-bad Pod(0/1 NotReady)가 화면에 보이도록 충분한 줄 수로 출력
+  EV_LINES=14 ev "$p" bad-deploy-pods -- kubectl --context "$CLUSTER" -n shop get pods -o wide
   record bad_deploy "$p" "$exp" "$(python3 -c "import sys;print('PROTECTED' if float(sys.argv[1] or 0)>=95 else 'DEGRADED')" "$sr")" "장애: 버그 버전 배포 중 서비스 영향" "배포 중 성공률 ${sr}%"
   info "롤백: kubectl rollout undo"
   local t0 sec ver; t0=$(date +%s)
@@ -327,7 +340,7 @@ scenario_status() {
   k get nodes -L eks.amazonaws.com/nodegroup 2>/dev/null
   section "CI · ECR"
   info "CI 보안 게이트: $(gate_state)"
-  aws ecr describe-images --repository-name "$ECR_REPO" --query 'imageDetails[].[imageTags[0],imagePushedAt]' --output text 2>/dev/null | sed 's/^/    /'
+  aws ecr describe-images --repository-name "$ECR_REPO" --query 'imageDetails[?imageTags].[imageTags[0],imagePushedAt]' --output text 2>/dev/null | sed 's/^/    /'
 }
 scenario_watch() {
   k -n shop get hpa 2>/dev/null; echo
